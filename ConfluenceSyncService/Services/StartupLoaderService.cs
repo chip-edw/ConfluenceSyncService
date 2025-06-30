@@ -6,10 +6,12 @@ namespace ConfluenceSyncService.Services
     public class StartupLoaderService
     {
         private readonly IServiceScopeFactory _scopeFactory;
+        private readonly IConfiguration _configuration;
 
-        public StartupLoaderService(IServiceScopeFactory scopeFactory)
+        public StartupLoaderService(IServiceScopeFactory scopeFactory, IConfiguration configuration)
         {
             _scopeFactory = scopeFactory;
+            _configuration = configuration;
 
         }
 
@@ -22,6 +24,8 @@ namespace ConfluenceSyncService.Services
                 var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
                 // Critical! Configurations go here
+                // Load SharePoint Site/List config from appsettings.json
+                StartupConfiguration.LoadSharePointConfiguration(_configuration);
 
 
             }

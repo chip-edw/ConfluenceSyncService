@@ -16,6 +16,9 @@ namespace ConfluenceSyncService
         //Dictionary holds config values specific to MS Graph API - This dictionary loaded from AppSettings
         public static Dictionary<string, string> graphConfigs = new Dictionary<string, string>();
 
+        public static Dictionary<string, string> siteIdCache = new();
+        public static Dictionary<string, string> listIdCache = new();
+        public static List<SharePointSiteConfig> configuredSites = new();  // SharePoint structure from appsettings.json
 
         #endregion
 
@@ -126,6 +129,23 @@ namespace ConfluenceSyncService
             Environment.FailFast(message);  // Immediately terminates the process the application and any threads such as Schedulers
 
             return null!;
+        }
+
+        public static void LoadSharePointConfiguration(IConfiguration configuration)
+        {
+            try
+            {
+                configuredSites = configuration
+                    .GetSection("SharePoint:Sites")
+                    .Get<List<SharePointSiteConfig>>() ?? new List<SharePointSiteConfig>();
+
+                Log.Information($"Loaded {configuredSites.Count} SharePoint site configurations from appsettings.json");
+            }
+            catch (Exception ex)
+            {
+                Log.Fatal("Failed to load SharePoint Sites from configuration. Exception: {Error}", ex);
+                Environment.FailFast("Unable to load SharePoint site config from appsettings.json");
+            }
         }
 
         #endregion
