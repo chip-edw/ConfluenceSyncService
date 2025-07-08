@@ -18,6 +18,8 @@ namespace ConfluenceSyncService.ConfluenceAPI
             _defaultProfile = config["ConfluenceOAuth:DefaultProfile"] ?? "Default";
         }
 
+        public string? CloudId => _cloudId;
+
         public async Task<(string AccessToken, string CloudId)> GetAccessTokenAsync(string? profileKey = null, CancellationToken cancellationToken = default)
         {
             var resolvedProfile = profileKey ?? _defaultProfile;

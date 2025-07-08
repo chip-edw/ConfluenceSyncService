@@ -3,6 +3,7 @@ using System;
 using ConfluenceSyncService.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConfluenceSyncService.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250708115352_AddSyncStateTable")]
+    partial class AddSyncStateTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.6");
@@ -54,49 +57,6 @@ namespace ConfluenceSyncService.Migrations
                     b.ToTable("ConfigStore");
                 });
 
-            modelBuilder.Entity("ConfluenceSyncService.Models.SyncProfile", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ConfluenceDashboardPageId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ConfluenceDatabaseId")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ConfluenceSpaceKey")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Direction")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("ProfileName")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("SharePointListId")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("SharePointSiteId")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("SyncProfile");
-                });
-
             modelBuilder.Entity("ConfluenceSyncService.Models.SyncState", b =>
                 {
                     b.Property<string>("Id")
@@ -120,28 +80,11 @@ namespace ConfluenceSyncService.Migrations
                     b.Property<string>("SharePointId")
                         .HasColumnType("TEXT");
 
-                    b.Property<string>("SyncProfileId")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
                     b.HasKey("Id");
-
-                    b.HasIndex("SyncProfileId");
 
                     b.HasIndex("SharePointId", "ConfluenceId");
 
                     b.ToTable("SyncStates");
-                });
-
-            modelBuilder.Entity("ConfluenceSyncService.Models.SyncState", b =>
-                {
-                    b.HasOne("ConfluenceSyncService.Models.SyncProfile", "SyncProfile")
-                        .WithMany()
-                        .HasForeignKey("SyncProfileId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("SyncProfile");
                 });
 #pragma warning restore 612, 618
         }

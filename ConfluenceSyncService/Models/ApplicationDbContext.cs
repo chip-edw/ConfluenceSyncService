@@ -10,6 +10,8 @@ namespace ConfluenceSyncService.Models
             //Empty constructor body. Was bugging me so I put this comment here.
         }
         public DbSet<ConfigStore> ConfigStore { get; set; }
+        public DbSet<SyncState> SyncStates { get; set; }
+
 
         public override int SaveChanges()
         {
@@ -86,9 +88,24 @@ namespace ConfluenceSyncService.Models
 
                 entity.Property(e => e.UpdatedAt)
                     .HasDefaultValueSql("CURRENT_TIMESTAMP");
+            });
 
+            modelBuilder.Entity<SyncState>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+
+                entity.Property(e => e.SharePointId).IsRequired(false);
+                entity.Property(e => e.ConfluenceId).IsRequired(false);
+                entity.Property(e => e.LastSharePointModifiedUtc).IsRequired(false);
+                entity.Property(e => e.LastConfluenceModifiedUtc).IsRequired(false);
+                entity.Property(e => e.LastSyncedUtc).IsRequired(false);
+                entity.Property(e => e.LastSource).IsRequired(false);
+
+                // Optional: Add a unique constraint if you want to prevent duplicate pairs
+                entity.HasIndex(e => new { e.SharePointId, e.ConfluenceId }).IsUnique(false);
             });
         }
         #endregion
+
     }
 }

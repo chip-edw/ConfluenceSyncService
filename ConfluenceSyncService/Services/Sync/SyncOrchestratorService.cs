@@ -69,5 +69,6 @@ namespace ConfluenceSyncService.Services.Sync
                 _logger.Error(ex, "An error occurred during synchronization.");
             }
         }
+
     }
 }
