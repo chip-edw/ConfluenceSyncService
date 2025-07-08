@@ -19,6 +19,8 @@ namespace ConfluenceSyncService
         public static Dictionary<string, string> siteIdCache = new();
         public static Dictionary<string, string> listIdCache = new();
         public static List<SharePointSiteConfig> configuredSites = new();  // SharePoint structure from appsettings.json
+        public static List<SharePointSiteConfig> SharePointSites { get; private set; } = new();
+
 
         #endregion
 
@@ -109,6 +111,29 @@ namespace ConfluenceSyncService
     ;
             Log.Debug("MS Graph Configs Loaded\n");
         }
+
+        public static void LoadSharePointConfig(IConfiguration configuration)
+        {
+            try
+            {
+                var config = configuration.GetSection("SharePointConfig").Get<SharePointConfig>();
+
+                if (config?.Sites != null && config.Sites.Any())
+                {
+                    SharePointSites = config.Sites;
+                    Log.Information("Loaded {Count} SharePoint sites from configuration.", SharePointSites.Count);
+                }
+                else
+                {
+                    Log.Warning("No SharePoint sites found in configuration.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to load SharePoint configuration from appsettings.json.");
+            }
+        }
+
 
         internal static string GetMsGraphConfig(string Tkey)
         {

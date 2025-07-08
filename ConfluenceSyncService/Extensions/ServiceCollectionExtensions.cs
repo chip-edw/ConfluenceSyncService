@@ -1,4 +1,6 @@
-﻿using ConfluenceSyncService.Common.Secrets;
+﻿using ConfluenceSyncService.Auth;
+using ConfluenceSyncService.Common.Secrets;
+using ConfluenceSyncService.ConfluenceAPI;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
 using ConfluenceSyncService.Services;
@@ -13,7 +15,8 @@ namespace ConfluenceSyncService.Extensions
         public static IServiceCollection AddAppServices(this IServiceCollection services)
         {
             #region Core Configuration
-            services.AddSingleton<ISecretsProvider, LocalSecretsProvider>();
+            services.AddHttpClient();
+            services.AddScoped<ISecretsProvider, SqliteSecretsProvider>();
             #endregion
 
             #region MS Graph Integration
@@ -22,7 +25,14 @@ namespace ConfluenceSyncService.Extensions
             #endregion
 
             #region Business Services and Internal API
+
             services.AddSingleton<StartupLoaderService>();
+
+            services.AddScoped<IConfluenceAuthClient, ConfluenceAuthClient>();
+
+            services.AddScoped<ConfluenceTokenManager>();
+
+
             #endregion
 
 

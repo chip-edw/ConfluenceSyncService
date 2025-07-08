@@ -1,3 +1,4 @@
+using ConfluenceSyncService.ConfluenceAPI;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
 using ConfluenceSyncService.Services;
@@ -30,10 +31,11 @@ namespace ConfluenceSyncService
         private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly StartupLoaderService _startupLoaderService;
         private readonly IConfiguration _configuration;
+        private readonly ConfluenceTokenManager _confluenceTokenManager;
 
 
         public Worker(ConfidentialClientApp confidentialClientApp, IConfiguration configuration, ILogger<Worker> logger, IServiceScopeFactory serviceScopeFactory,
-            StartupLoaderService startupLoaderService, DbContextOptions<ApplicationDbContext> dbOptions)
+            StartupLoaderService startupLoaderService, DbContextOptions<ApplicationDbContext> dbOptions, ConfluenceTokenManager confluenceTokenManager)
         {
             _confidentialClientApp = confidentialClientApp;
             _logger = Log.ForContext<Worker>();
@@ -41,6 +43,7 @@ namespace ConfluenceSyncService
             _startupLoaderService = startupLoaderService ?? throw new ArgumentNullException(nameof(startupLoaderService));
             _dbOptions = dbOptions;
             _serviceScopeFactory = serviceScopeFactory ?? throw new ArgumentNullException(nameof(serviceScopeFactory));
+            _confluenceTokenManager = confluenceTokenManager ?? throw new ArgumentNullException(nameof(confluenceTokenManager));
         }
 
         #endregion
@@ -66,6 +69,31 @@ namespace ConfluenceSyncService
             // ################ Loading Configuration.
 
             await _startupLoaderService.LoadAllStartupDataAsync();
+
+
+            //   ###   Get Confluence Initial Access_token and Refresh_token ###
+            _logger.Information("Attempting to retrieve initial Confluence access token...");
+
+            try
+            {
+                var (accessToken, cloudId) = await _confluenceTokenManager.GetAccessTokenAsync("Default", cancellationToken);
+
+                _logger.Information("Successfully acquired Confluence access token.");
+                _logger.Debug("Access token (first 10 chars): {TokenPrefix}", accessToken.Substring(0, 10));
+                _logger.Debug("Associated Cloud ID: {CloudId}", cloudId);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "\nCritical failure: Unable to acquire initial Confluence access token.\n" +
+                                  "Please verify that the Client ID, Client Secret, and Refresh Token are correct and not expired.\n" +
+                                  "Confluence integration will not function. Halting application startup.");
+
+                // Rethrow to abort app start and signal failure to the host
+                throw;
+            }
+
+
+
 
 
             //########################################################################################
@@ -156,7 +184,7 @@ namespace ConfluenceSyncService
             var tD = StartupConfiguration.GetProtectedSetting("TimeDelay");
             int timeDelay = Int32.Parse(tD) * 1000;
 
-            _logger.Information(">>> About to get access token...");
+            _logger.Information(">>> About to get MSGraph access token...");
 
             Task<string> tokenTask = _confidentialClientApp.GetAccessToken();
 
