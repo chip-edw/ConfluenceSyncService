@@ -11,6 +11,9 @@ namespace ConfluenceSyncService.ConfluenceAPI
         private string? _cloudId;
         private readonly string _defaultProfile;
 
+        public DateTimeOffset ExpiresAt => _expiresAt;
+
+
         public ConfluenceTokenManager(IConfiguration config, IConfluenceAuthClient authClient, ILogger<ConfluenceTokenManager> logger)
         {
             _authClient = authClient;

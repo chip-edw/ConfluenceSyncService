@@ -1,9 +1,12 @@
 ﻿using ConfluenceSyncService.Auth;
 using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.ConfluenceAPI;
+using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
 using ConfluenceSyncService.Services;
+using ConfluenceSyncService.Services.Clients;
+using ConfluenceSyncService.Services.Sync;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Client;
 
@@ -25,13 +28,23 @@ namespace ConfluenceSyncService.Extensions
             #endregion
 
             #region Business Services and Internal API
-
             services.AddSingleton<StartupLoaderService>();
-
             services.AddScoped<IConfluenceAuthClient, ConfluenceAuthClient>();
-
             services.AddScoped<ConfluenceTokenManager>();
+            services.AddScoped<ISyncOrchestratorService, SyncOrchestratorService>();
 
+            services.AddTransient<SharePointClient>(provider =>
+            {
+                var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
+                var httpClient = httpClientFactory.CreateClient();
+                var confidentialClient = provider.GetRequiredService<ConfidentialClientApp>();
+                var configuration = provider.GetRequiredService<IConfiguration>();
+                return new SharePointClient(httpClient, confidentialClient, configuration);
+            });
+
+
+
+            services.AddHttpClient<ConfluenceClient>();
 
             #endregion
 

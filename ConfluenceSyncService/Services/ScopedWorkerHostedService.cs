@@ -17,20 +17,24 @@
 
             _executingTask = Task.Run(async () =>
             {
-                using var scope = _serviceProvider.CreateScope();
-                var worker = scope.ServiceProvider.GetRequiredService<IWorkerService>();
-
-                //Setup and start the Core Application
-                if (worker is Worker actualWorker)
+                try
                 {
-                    await actualWorker.StartAsync(_cts.Token); // Important! runs setup fop App....
+                    using var scope = _serviceProvider.CreateScope();
+                    var worker = scope.ServiceProvider.GetRequiredService<IWorkerService>();
 
+                    if (worker is Worker actualWorker)
+                        await actualWorker.StartAsync(_cts.Token);
+
+                    await worker.DoWorkAsync(_cts.Token);
                 }
-
-                await worker.DoWorkAsync(_cts.Token);
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[FATAL ScopedWorkerHostedService] Exception: {ex}");
+                    throw; // rethrow so host knows startup failed
+                }
             });
 
-            return Task.CompletedTask;
+            return _executingTask; // ← THIS IS THE KEY FIX
         }
 
         public async Task StopAsync(CancellationToken cancellationToken)

@@ -1,4 +1,5 @@
 using ConfluenceSyncService.ConfluenceAPI;
+using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
 using ConfluenceSyncService.Services;
@@ -32,10 +33,13 @@ namespace ConfluenceSyncService
         private readonly StartupLoaderService _startupLoaderService;
         private readonly IConfiguration _configuration;
         private readonly ConfluenceTokenManager _confluenceTokenManager;
+        private readonly ISyncOrchestratorService _syncOrchestratorService;
+
 
 
         public Worker(ConfidentialClientApp confidentialClientApp, IConfiguration configuration, ILogger<Worker> logger, IServiceScopeFactory serviceScopeFactory,
-            StartupLoaderService startupLoaderService, DbContextOptions<ApplicationDbContext> dbOptions, ConfluenceTokenManager confluenceTokenManager)
+            StartupLoaderService startupLoaderService, DbContextOptions<ApplicationDbContext> dbOptions, ConfluenceTokenManager confluenceTokenManager,
+            ISyncOrchestratorService syncOrchestratorService)
         {
             _confidentialClientApp = confidentialClientApp;
             _logger = Log.ForContext<Worker>();
@@ -44,6 +48,7 @@ namespace ConfluenceSyncService
             _dbOptions = dbOptions;
             _serviceScopeFactory = serviceScopeFactory ?? throw new ArgumentNullException(nameof(serviceScopeFactory));
             _confluenceTokenManager = confluenceTokenManager ?? throw new ArgumentNullException(nameof(confluenceTokenManager));
+            _syncOrchestratorService = syncOrchestratorService ?? throw new ArgumentException(nameof(syncOrchestratorService));
         }
 
         #endregion
@@ -220,19 +225,26 @@ namespace ConfluenceSyncService
 
             while (!cancellationToken.IsCancellationRequested && !cancelTokenIssued)
             {
-                _logger.Information("Worker running at: {time}", DateTimeOffset.Now);
+                _logger.Debug("Worker heartbeat at: {time}", DateTimeOffset.Now);
 
                 try
                 {
-                    if (Authenticate.GetExpiresOn() > DateTime.UtcNow)
+                    bool msGraphTokenValid = Authenticate.GetExpiresOn() > DateTime.UtcNow;
+                    bool confluenceTokenValid = _confluenceTokenManager.ExpiresAt > DateTimeOffset.UtcNow.AddMinutes(1);
+
+                    if (msGraphTokenValid && confluenceTokenValid)
                     {
                         // Just to gove some indication on the console that the loop is still running
-                        _logger.Information("Worker running at: {time}", DateTimeOffset.Now);
+                        _logger.Information("Both MS Graph and Confluence tokens are valid at: {time}", DateTimeOffset.Now);
 
                         #region Plugin Loader Place Holder
                         #endregion
 
-                        #region Place Holder for checking the mailbox associated with the service
+                        #region Invoke SyncOrchestratorService
+
+                        // Run sync here
+                        await _syncOrchestratorService.RunSyncAsync(cancellationToken);
+
                         #endregion
 
                         await Task.Delay(timeDelay, cancellationToken); //Pausing for seconds set in SQL DB ConfigStore Table under TimeDelay
@@ -240,16 +252,23 @@ namespace ConfluenceSyncService
                     }
                     else
                     {
-                        if (cancellationToken.IsCancellationRequested || _cancellationTokenSource.IsCancellationRequested ||
-                            cancelTokenIssued == true)
+                        _logger.Information("Token refresh needed: MSGraph Valid = {MS}, Confluence Valid = {CF}", msGraphTokenValid, confluenceTokenValid);
+
+                        if (!msGraphTokenValid)
                         {
-                            _logger.Information("\n ... Cancellation requested. Exiting worker service loop... \n");
-                            break;
+                            _logger.Information("Refreshing MS Graph token...");
+                            await _confidentialClientApp.GetAccessToken();
+                            _logger.Debug("Acquired new MS Graph token.");
                         }
 
-                        await Task.Delay(500, cancellationToken);
-                        await _confidentialClientApp.GetAccessToken();
-                        _logger.Debug("Aquired Bearer Token");
+                        if (!confluenceTokenValid)
+                        {
+                            _logger.Information("Refreshing Confluence token...");
+                            var (accessToken, cloudId) = await _confluenceTokenManager.GetAccessTokenAsync("Default", cancellationToken);
+                            _logger.Debug("Acquired new Confluence token. First 10 chars: {Token}", accessToken.Substring(0, 10));
+                        }
+
+                        await Task.Delay(1000, cancellationToken); // Short delay before next loop
                     }
 
                 }
@@ -261,7 +280,7 @@ namespace ConfluenceSyncService
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, "Worker.cs failed to acquire an Access Bearer Token. Exception details:");
+                    _logger.Error(ex, "Unexpected error in background loop.");
                 }
 
 

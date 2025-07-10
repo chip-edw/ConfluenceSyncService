@@ -21,7 +21,7 @@ namespace ConfluenceSyncService.Services.Sync
 
         public async Task RunSyncAsync(CancellationToken cancellationToken)
         {
-            _logger.Information("Starting synchronization process between SharePoint and Confluence...");
+            _logger.Information("Starting synchronization process between SharePoint and Confluence...\n\n\n");
 
             try
             {
@@ -35,13 +35,26 @@ namespace ConfluenceSyncService.Services.Sync
 
                 foreach (var site in sites)
                 {
-                    _logger.Information("Processing SharePoint site: {SitePath}", site.SitePath);
+                    _logger.Information("Processing SharePoint site: {SiteId}", site.SiteId);
 
                     foreach (var list in site.Lists)
                     {
                         _logger.Information("Processing SharePoint list: {ListDisplayName}", list.DisplayName);
 
-                        var sharePointItems = await _sharePointClient.GetAllListItemsAsync(site.SitePath, list.DisplayName);
+                        //  TEMP: Test delta sync logic
+                        var testSince = DateTime.UtcNow.AddDays(-7); // adjust to match your data
+                        var deltaItems = await _sharePointClient.GetRecentlyModifiedItemsAsync(site.SiteId, list.DisplayName, testSince);
+
+                        _logger.Information("Delta test: Found {Count} recently modified SharePoint items since {Since}", deltaItems.Count, testSince);
+
+                        foreach (var deltaItem in deltaItems)
+                        {
+                            _logger.Information("Delta Item: ID={Id}, Title={Title}, Modified={Modified}",
+                                deltaItem.Id, deltaItem.Title, deltaItem.LastModifiedUtc);
+                        }
+                        // END TEMP:
+
+                        var sharePointItems = await _sharePointClient.GetAllListItemsAsync(site.SiteId, list.DisplayName);
                         _logger.Information("Loaded {Count} items from SharePoint list: {List}", sharePointItems.Count, list.DisplayName);
 
                         var confluenceItems = await _confluenceClient.GetAllDatabaseItemsAsync(list.ConfluenceDatabaseId);
@@ -69,6 +82,5 @@ namespace ConfluenceSyncService.Services.Sync
                 _logger.Error(ex, "An error occurred during synchronization.");
             }
         }
-
     }
 }
