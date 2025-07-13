@@ -117,14 +117,6 @@ namespace ConfluenceSyncService
                 Log.CloseAndFlush();
             }
 
-
-            //################ OLD application builder and host ################
-            //var builder = Host.CreateApplicationBuilder(args);
-            //builder.Services.AddHostedService<Worker>();
-
-            //var host = builder.Build();
-            //host.Run();
-            //##################################################################
         }
 
         private static void ConfigureServices(IServiceCollection services, IConfiguration configuration)

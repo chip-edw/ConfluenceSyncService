@@ -1,7 +1,6 @@
 ﻿using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Services.Clients;
 using ConfluenceSyncService.Utilities;
-
 using Serilog;
 
 namespace ConfluenceSyncService.Services.Sync

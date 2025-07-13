@@ -90,25 +90,25 @@ namespace ConfluenceSyncService
                 {
                     SharePointSites = config.Sites;
 
-                    Log.Information("✅ Loaded {Count} SharePoint site(s) from configuration.", SharePointSites.Count);
+                    Log.Information("Loaded {Count} SharePoint site(s) from configuration.", SharePointSites.Count);
 
                     foreach (var site in SharePointSites)
                     {
-                        Log.Debug("→ Site loaded: {DisplayName}, Path: {SitePath}", site.DisplayName, site.SitePath);
+                        Log.Debug("Site loaded: {DisplayName}, Path: {SitePath}", site.DisplayName, site.SitePath);
                         foreach (var list in site.Lists)
                         {
-                            Log.Debug("  ↳ List: {DisplayName}, ConfluenceDB ID: {ConfluenceDatabaseId}", list.DisplayName, list.ConfluenceDatabaseId);
+                            Log.Debug(" List: {DisplayName}, ConfluenceDB ID: {ConfluenceDatabaseId}", list.DisplayName, list.ConfluenceDatabaseId);
                         }
                     }
                 }
                 else
                 {
-                    Log.Warning("⚠️ No SharePoint sites found in configuration.");
+                    Log.Warning(" No SharePoint sites found in configuration.");
                 }
             }
             catch (Exception ex)
             {
-                Log.Fatal(ex, "❌ Failed to load SharePoint configuration from appsettings.json.");
+                Log.Fatal(ex, " Failed to load SharePoint configuration from appsettings.json.");
                 Environment.FailFast("Unable to load SharePoint configuration.");
             }
         }

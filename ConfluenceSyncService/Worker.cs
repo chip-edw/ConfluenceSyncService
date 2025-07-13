@@ -3,6 +3,7 @@ using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
 using ConfluenceSyncService.Services;
+using ConfluenceSyncService.Services.Clients;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
@@ -33,13 +34,14 @@ namespace ConfluenceSyncService
         private readonly StartupLoaderService _startupLoaderService;
         private readonly IConfiguration _configuration;
         private readonly ConfluenceTokenManager _confluenceTokenManager;
+        private readonly ConfluenceClient _confluenceClient;
         private readonly ISyncOrchestratorService _syncOrchestratorService;
 
 
 
         public Worker(ConfidentialClientApp confidentialClientApp, IConfiguration configuration, ILogger<Worker> logger, IServiceScopeFactory serviceScopeFactory,
             StartupLoaderService startupLoaderService, DbContextOptions<ApplicationDbContext> dbOptions, ConfluenceTokenManager confluenceTokenManager,
-            ISyncOrchestratorService syncOrchestratorService)
+            ConfluenceClient confluenceClient, ISyncOrchestratorService syncOrchestratorService)
         {
             _confidentialClientApp = confidentialClientApp;
             _logger = Log.ForContext<Worker>();
@@ -48,6 +50,7 @@ namespace ConfluenceSyncService
             _dbOptions = dbOptions;
             _serviceScopeFactory = serviceScopeFactory ?? throw new ArgumentNullException(nameof(serviceScopeFactory));
             _confluenceTokenManager = confluenceTokenManager ?? throw new ArgumentNullException(nameof(confluenceTokenManager));
+            _confluenceClient = confluenceClient;
             _syncOrchestratorService = syncOrchestratorService ?? throw new ArgumentException(nameof(syncOrchestratorService));
         }
 
@@ -97,9 +100,63 @@ namespace ConfluenceSyncService
                 throw;
             }
 
+            Console.WriteLine("\n\n");
+            // TEST: Read Customer Pages
+            try
+            {
+                _logger.Information("=== TESTING CUSTOMER PAGES RETRIEVAL ===");
+                var customerPages = await _confluenceClient.GetCustomerPagesAsync(cancellationToken);
+                _logger.Information("Successfully retrieved {Count} customer pages", customerPages.Count);
 
+                foreach (var page in customerPages)
+                {
+                    Console.WriteLine($"\n--- Customer Page ---");
+                    Console.WriteLine($"ID: {page.Id}");
+                    Console.WriteLine($"Title: {page.Title}");
+                    Console.WriteLine($"Customer Name: {page.CustomerName}");
 
+                    // Get full page content to check for database
+                    try
+                    {
+                        var fullPage = await _confluenceClient.GetPageWithContentAsync(page.Id, cancellationToken);
+                        Console.WriteLine($"Status: {fullPage.Status}");
+                        Console.WriteLine($"Version: {fullPage.Version}");
+                        Console.WriteLine($"Created: {fullPage.CreatedAt:u}");
+                        Console.WriteLine($"Updated: {fullPage.UpdatedAt:u}");
+                        Console.WriteLine($"Has Database: {fullPage.HasDatabase}");
 
+                        if (fullPage.HasDatabase)
+                        {
+                            Console.WriteLine($"Database found on page!");
+                            // Show a snippet of the HTML content for debugging
+                            var contentSnippet = fullPage.HtmlContent?.Substring(0, Math.Min(200, fullPage.HtmlContent.Length));
+                            Console.WriteLine($"Content snippet: {contentSnippet}...");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"No database detected");
+                            // Show HTML snippet to help debug
+                            var contentSnippet = fullPage.HtmlContent?.Substring(0, Math.Min(200, fullPage.HtmlContent.Length));
+                            Console.WriteLine($"Content snippet: {contentSnippet}...");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error getting full page content: {ex.Message}");
+                    }
+                }
+
+                if (customerPages.Count == 0)
+                {
+                    Console.WriteLine("No customer pages found under the parent page.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to retrieve customer pages");
+                // Don't throw - this is just a test
+            }
+            _logger.Information("=== END CUSTOMER PAGES TEST ===");
 
             //########################################################################################
 

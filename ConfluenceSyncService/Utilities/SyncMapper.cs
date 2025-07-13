@@ -1,5 +1,5 @@
 ﻿using ConfluenceSyncService.Dtos;
-using ConfluenceSyncService.Models.ConfluenceSyncService.Models;
+using ConfluenceSyncService.Models;
 
 namespace ConfluenceSyncService.Utilities
 {

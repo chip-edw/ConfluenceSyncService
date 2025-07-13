@@ -44,7 +44,16 @@ namespace ConfluenceSyncService.Extensions
 
 
 
-            services.AddHttpClient<ConfluenceClient>();
+            services.AddHttpClient<ConfluenceClient>((provider, httpClient) =>
+            {
+                // Optional: set any base address or default headers here
+            }).AddTypedClient((httpClient, provider) =>
+            {
+                var tokenManager = provider.GetRequiredService<ConfluenceTokenManager>();
+                var configuration = provider.GetRequiredService<IConfiguration>();
+                return new ConfluenceClient(httpClient, tokenManager, configuration);
+            });
+
 
             #endregion
 
