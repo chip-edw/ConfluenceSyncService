@@ -100,63 +100,51 @@ namespace ConfluenceSyncService
                 throw;
             }
 
-            Console.WriteLine("\n\n");
-            // TEST: Read Customer Pages
+            // TEST: Create new Transition Tracker table with fixed Region field
+            //try
+            //{
+            //    _logger.Information("=== TESTING NEW TABLE CREATION ===");
+
+            //    var createSuccess = await _confluenceClient.CreateTransitionTrackerTableAsync("4554759", "ABB Con-cise Optical Group");
+            //    Console.WriteLine($"Table creation successful: {createSuccess}");
+            //}
+            //catch (Exception ex)
+            //{
+            //    _logger.Error(ex, "Failed to create new table");
+            //}
+            //_logger.Information("=== END TABLE CREATION TEST ===");
+
+
+
+            Console.Write("\n\n");
+            // TEST: Update status text based on colors and parse table
             try
             {
-                _logger.Information("=== TESTING CUSTOMER PAGES RETRIEVAL ===");
-                var customerPages = await _confluenceClient.GetCustomerPagesAsync(cancellationToken);
-                _logger.Information("Successfully retrieved {Count} customer pages", customerPages.Count);
+                _logger.Information("=== TESTING STATUS TEXT UPDATE AND PARSING ===");
 
-                foreach (var page in customerPages)
+                // First, update any status text based on current colors
+                var updateSuccess = await _confluenceClient.UpdateStatusTextBasedOnColorAsync("4554759");
+                Console.WriteLine($"Status text update successful: {updateSuccess}");
+
+                // Then parse the table data
+                var tableData = await _confluenceClient.ParseTransitionTrackerTableAsync("4554759");
+
+                Console.WriteLine("=== PARSED TABLE DATA ===");
+                foreach (var kvp in tableData)
                 {
-                    Console.WriteLine($"\n--- Customer Page ---");
-                    Console.WriteLine($"ID: {page.Id}");
-                    Console.WriteLine($"Title: {page.Title}");
-                    Console.WriteLine($"Customer Name: {page.CustomerName}");
-
-                    // Get full page content to check for database
-                    try
-                    {
-                        var fullPage = await _confluenceClient.GetPageWithContentAsync(page.Id, cancellationToken);
-                        Console.WriteLine($"Status: {fullPage.Status}");
-                        Console.WriteLine($"Version: {fullPage.Version}");
-                        Console.WriteLine($"Created: {fullPage.CreatedAt:u}");
-                        Console.WriteLine($"Updated: {fullPage.UpdatedAt:u}");
-                        Console.WriteLine($"Has Database: {fullPage.HasDatabase}");
-
-                        if (fullPage.HasDatabase)
-                        {
-                            Console.WriteLine($"Database found on page!");
-                            // Show a snippet of the HTML content for debugging
-                            var contentSnippet = fullPage.HtmlContent?.Substring(0, Math.Min(200, fullPage.HtmlContent.Length));
-                            Console.WriteLine($"Content snippet: {contentSnippet}...");
-                        }
-                        else
-                        {
-                            Console.WriteLine($"No database detected");
-                            // Show HTML snippet to help debug
-                            var contentSnippet = fullPage.HtmlContent?.Substring(0, Math.Min(200, fullPage.HtmlContent.Length));
-                            Console.WriteLine($"Content snippet: {contentSnippet}...");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error getting full page content: {ex.Message}");
-                    }
+                    Console.WriteLine($"{kvp.Key}: {kvp.Value}");
                 }
 
-                if (customerPages.Count == 0)
+                if (tableData.Count == 0)
                 {
-                    Console.WriteLine("No customer pages found under the parent page.");
+                    Console.WriteLine("No table data found - check if table exists and has the correct structure");
                 }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Failed to retrieve customer pages");
-                // Don't throw - this is just a test
+                _logger.Error(ex, "Failed to test status update and parsing");
             }
-            _logger.Information("=== END CUSTOMER PAGES TEST ===");
+            _logger.Information("=== END STATUS UPDATE AND PARSING TEST ===");
 
             //########################################################################################
 

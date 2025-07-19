@@ -252,75 +252,527 @@ namespace ConfluenceSyncService.Services.Clients
         #endregion
 
         #region GetPageWithContentAsync
-        #region GetPageWithContentAsync
-        #region GetPageWithContentAsync
         public async Task<ConfluencePage> GetPageWithContentAsync(string pageId, CancellationToken cancellationToken = default)
         {
             _logger.Information("Getting full content for page {PageId}", pageId);
-
             // Use v1 API which has better content expansion support
             var baseUrl = _configuration["Confluence:BaseUrl"].Replace("/api/v2", "");
-            var url = $"{baseUrl}/rest/api/content/{pageId}?expand=body.storage,version";
-
+            var url = $"{baseUrl}/rest/api/content/{pageId}?expand=body.atlas_doc_format,body.storage,version";
             Console.WriteLine($"DEBUG: Full URL: {url}");
-
             var request = new HttpRequestMessage(HttpMethod.Get, url);
-
             // Use API Token auth
             var username = _configuration["Confluence:Username"];
             var apiToken = _configuration["Confluence:ApiToken"];
             var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
-
             var response = await _httpClient.SendAsync(request, cancellationToken);
             response.EnsureSuccessStatusCode();
-
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
-
             // DEBUG: Show raw response
             Console.WriteLine($"DEBUG: Raw response length: {content.Length}");
             Console.WriteLine($"DEBUG: Raw response sample: {content.Substring(0, Math.Min(500, content.Length))}");
-
             var json = JObject.Parse(content);
-
             var page = new ConfluencePage
             {
                 Id = json["id"]?.ToString() ?? "",
                 Title = json["title"]?.ToString() ?? "",
                 Status = json["status"]?.ToString() ?? "",
                 Version = json["version"]?["number"]?.Value<int>() ?? 1,
-                HtmlContent = json["body"]?["storage"]?["value"]?.ToString()
+                HtmlContent = json["body"]?["storage"]?["value"]?.ToString(),
+                AdfContent = json["body"]?["atlas_doc_format"]?["value"]?.ToString()
             };
-
             Console.WriteLine($"DEBUG: HtmlContent length: {page.HtmlContent?.Length ?? 0}");
             if (!string.IsNullOrEmpty(page.HtmlContent))
             {
                 Console.WriteLine($"DEBUG: HtmlContent sample: {page.HtmlContent.Substring(0, Math.Min(300, page.HtmlContent.Length))}");
             }
-
+            Console.WriteLine($"DEBUG: AdfContent length: {page.AdfContent?.Length ?? 0}");
+            if (!string.IsNullOrEmpty(page.AdfContent))
+            {
+                // Console.WriteLine($"DEBUG: AdfContent sample: {page.AdfContent.Substring(0, Math.Min(500, page.AdfContent.Length))}");
+                Console.WriteLine($"DEBUG: Full AdfContent: {page.AdfContent}");
+            }
             // Parse timestamps
             if (DateTime.TryParse(json["created"]?.ToString(), out var createdAt))
                 page.CreatedAt = createdAt;
             if (DateTime.TryParse(json["version"]?["when"]?.ToString(), out var updatedAt))
                 page.UpdatedAt = updatedAt;
-
             page.CustomerName = ExtractCustomerNameFromTitle(page.Title);
-
-            // Check if page has a database
-            page.HasDatabase = CheckForDatabase(page.HtmlContent);
-
+            // Check if page has a database - check both HTML and ADF
+            page.HasDatabase = CheckForDatabase(page.HtmlContent) || CheckForDatabaseInAdf(page.AdfContent);
             _logger.Information("Retrieved page content, HasDatabase: {HasDatabase}", page.HasDatabase);
             return page;
         }
         #endregion
+
+        #region CreateTransitionTrackerTableAsync
+        public async Task<bool> CreateTransitionTrackerTableAsync(string pageId, string customerName, CancellationToken cancellationToken = default)
+        {
+            _logger.Information("Creating Transition Tracker table on page {PageId} for customer {CustomerName}", pageId, customerName);
+
+            // Get current page content and version
+            var currentPage = await GetPageWithContentAsync(pageId, cancellationToken);
+
+            // Create table structure matching SharePoint TransitionTracker list
+            var tableAdf = new JObject
+            {
+                ["type"] = "table",
+                ["attrs"] = new JObject
+                {
+                    ["layout"] = "default",
+                    ["width"] = 900.0,
+                    ["localId"] = Guid.NewGuid().ToString()
+                },
+                ["content"] = new JArray
+        {
+            // Header row
+            new JObject
+            {
+                ["type"] = "tableRow",
+                ["content"] = new JArray
+                {
+                    CreateTableHeader("Field"),
+                    CreateTableHeader("Value")
+                }
+            },
+            // Data rows matching SharePoint field names exactly
+            CreateTransitionTrackerRow("Region", CreateRegionStatusCell("")),
+            CreateTransitionTrackerRow("Status FF", CreateStatusCell("grey", "Select Status")),
+            CreateTransitionTrackerRow("Status Cust.", CreateStatusCell("grey", "Select Status")),
+            CreateTransitionTrackerRow("Phase", CreateTextCell("")), // Free form text
+            CreateTransitionTrackerRow("Support Impact", CreateSupportImpactCell("")),
+            CreateTransitionTrackerRow("Support Accepted", CreateSupportAcceptedCell("")),
+            CreateTransitionTrackerRow("Go-Live Date", CreateDateCell("")),
+            CreateTransitionTrackerRow("Support Go-Live Date", CreateDateCell("")),
+            CreateTransitionTrackerRow("Notes", CreateTextAreaCell("")), // Text field
+            CreateTransitionTrackerRow("Sync Tracker", CreateSyncTrackerCell("")) // Yes/No field
+        }
+            };
+
+            // Add table title
+            var titleAdf = new JObject
+            {
+                ["type"] = "heading",
+                ["attrs"] = new JObject { ["level"] = 2 },
+                ["content"] = new JArray
+        {
+            new JObject
+            {
+                ["type"] = "text",
+                ["text"] = $"{customerName} - Transition Tracker"
+            }
+        }
+            };
+
+            // Parse existing ADF content or create new
+            JObject adfDoc;
+            if (!string.IsNullOrEmpty(currentPage.AdfContent))
+            {
+                adfDoc = JObject.Parse(currentPage.AdfContent);
+            }
+            else
+            {
+                adfDoc = new JObject
+                {
+                    ["type"] = "doc",
+                    ["content"] = new JArray(),
+                    ["version"] = 1
+                };
+            }
+
+            // Add the title and table to the content
+            var contentArray = (JArray)adfDoc["content"];
+            contentArray.Add(titleAdf);
+            contentArray.Add(tableAdf);
+
+            // Update the page
+            var baseUrl = _configuration["Confluence:BaseUrl"].Replace("/api/v2", "");
+            var url = $"{baseUrl}/rest/api/content/{pageId}";
+
+            var updatePayload = new
+            {
+                version = new { number = currentPage.Version + 1 },
+                title = currentPage.Title,
+                type = "page",
+                body = new
+                {
+                    atlas_doc_format = new
+                    {
+                        value = adfDoc.ToString(Formatting.None),
+                        representation = "atlas_doc_format"
+                    }
+                }
+            };
+
+            var request = new HttpRequestMessage(HttpMethod.Put, url);
+
+            var username = _configuration["Confluence:Username"];
+            var apiToken = _configuration["Confluence:ApiToken"];
+            var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
+
+            request.Content = new StringContent(JsonConvert.SerializeObject(updatePayload), Encoding.UTF8, "application/json");
+
+            var response = await _httpClient.SendAsync(request, cancellationToken);
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.Information("Successfully created Transition Tracker table on page {PageId}", pageId);
+                return true;
+            }
+            else
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                _logger.Error("Failed to create Transition Tracker table on page {PageId}: {Error}", pageId, error);
+                return false;
+            }
+        }
+
         #endregion
+
+        #region ParseTransitionTrackerTableAsync
+        public async Task<Dictionary<string, string>> ParseTransitionTrackerTableAsync(string pageId, CancellationToken cancellationToken = default)
+        {
+            _logger.Information("Parsing Transition Tracker table from page {PageId}", pageId);
+
+            var page = await GetPageWithContentAsync(pageId, cancellationToken);
+
+            if (string.IsNullOrEmpty(page.AdfContent))
+            {
+                _logger.Warning("No ADF content found on page {PageId}", pageId);
+                return new Dictionary<string, string>();
+            }
+
+            var result = new Dictionary<string, string>();
+
+            try
+            {
+                var adf = JObject.Parse(page.AdfContent);
+                var content = adf["content"] as JArray;
+
+                if (content != null)
+                {
+                    // Find the transition tracker table
+                    foreach (var node in content)
+                    {
+                        if (node["type"]?.ToString() == "table")
+                        {
+                            var tableContent = node["content"] as JArray;
+                            if (tableContent != null)
+                            {
+                                result = ParseTableRows(tableContent);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to parse table data from page {PageId}", pageId);
+            }
+
+            _logger.Information("Parsed {Count} fields from Transition Tracker table", result.Count);
+            return result;
+        }
+
+        private Dictionary<string, string> ParseTableRows(JArray tableContent)
+        {
+            var result = new Dictionary<string, string>();
+
+            foreach (var row in tableContent)
+            {
+                if (row["type"]?.ToString() == "tableRow")
+                {
+                    var cells = row["content"]?.AsArray();
+                    if (cells != null && cells.Count() >= 2)
+                    {
+                        // First cell is the field name, second cell is the value
+                        var fieldName = ExtractTextFromCell(cells[0]);
+                        var fieldValue = ExtractValueFromCell(cells[1], fieldName);
+
+                        if (!string.IsNullOrEmpty(fieldName) && !string.IsNullOrEmpty(fieldValue))
+                        {
+                            result[fieldName] = fieldValue;
+                        }
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private string ExtractTextFromCell(JToken cell)
+        {
+            try
+            {
+                var content = cell["content"]?.AsArray();
+                if (content != null)
+                {
+                    foreach (var paragraph in content)
+                    {
+                        var paragraphContent = paragraph["content"]?.AsArray();
+                        if (paragraphContent != null)
+                        {
+                            foreach (var textNode in paragraphContent)
+                            {
+                                if (textNode["type"]?.ToString() == "text")
+                                {
+                                    return textNode["text"]?.ToString() ?? "";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to extract text from cell");
+            }
+
+            return "";
+        }
+
+        private string ExtractValueFromCell(JToken cell, string fieldName)
+        {
+            try
+            {
+                var content = cell["content"]?.AsArray();
+                if (content != null)
+                {
+                    foreach (var paragraph in content)
+                    {
+                        var paragraphContent = paragraph["content"]?.AsArray();
+                        if (paragraphContent != null)
+                        {
+                            foreach (var node in paragraphContent)
+                            {
+                                // Check for status macro (color-based fields)
+                                if (node["type"]?.ToString() == "status")
+                                {
+                                    var color = node["attrs"]?["color"]?.ToString();
+                                    return MapColorToValue(color, fieldName);
+                                }
+                                // Check for regular text
+                                else if (node["type"]?.ToString() == "text")
+                                {
+                                    return node["text"]?.ToString() ?? "";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to extract value from cell for field {FieldName}", fieldName);
+            }
+
+            return "";
+        }
+
+        private string MapColorToValue(string? color, string fieldName)
+        {
+            if (string.IsNullOrEmpty(color)) return "";
+
+            var mappingSection = fieldName switch
+            {
+                "Region" => "Region",
+                "Status FF" => "StatusFF",
+                "Status Cust." => "StatusCust",
+                "Support Impact" => "SupportImpact",
+                "Support Accepted" => "SupportAccepted",
+                "Sync Tracker" => "SyncTracker",
+                _ => null
+            };
+
+            if (mappingSection == null) return "";
+
+            var mapping = _configuration.GetSection($"ConfluenceColorMappings:{mappingSection}")[color];
+            return mapping ?? "";
+        }
         #endregion
 
+        #region UpdateStatusTextBasedOnColorAsync
+        public async Task<bool> UpdateStatusTextBasedOnColorAsync(string pageId, CancellationToken cancellationToken = default)
+        {
+            _logger.Information("Updating status text based on colors for page {PageId}", pageId);
 
+            var page = await GetPageWithContentAsync(pageId, cancellationToken);
 
+            if (string.IsNullOrEmpty(page.AdfContent))
+            {
+                _logger.Warning("No ADF content found on page {PageId}", pageId);
+                return false;
+            }
 
+            try
+            {
+                var adf = JObject.Parse(page.AdfContent);
+                var content = adf["content"]?.AsArray();
+                bool hasChanges = false;
 
+                // Find and update the transition tracker table
+                foreach (var node in content)
+                {
+                    if (node["type"]?.ToString() == "table")
+                    {
+                        hasChanges = UpdateTableStatusText(node);
+                        break;
+                    }
+                }
 
+                if (hasChanges)
+                {
+                    // Update the page with the modified content
+                    var baseUrl = _configuration["Confluence:BaseUrl"].Replace("/api/v2", "");
+                    var url = $"{baseUrl}/rest/api/content/{pageId}";
+
+                    var updatePayload = new
+                    {
+                        version = new { number = page.Version + 1 },
+                        title = page.Title,
+                        type = "page",
+                        body = new
+                        {
+                            atlas_doc_format = new
+                            {
+                                value = adf.ToString(Formatting.None),
+                                representation = "atlas_doc_format"
+                            }
+                        }
+                    };
+
+                    var request = new HttpRequestMessage(HttpMethod.Put, url);
+
+                    var username = _configuration["Confluence:Username"];
+                    var apiToken = _configuration["Confluence:ApiToken"];
+                    var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
+
+                    request.Content = new StringContent(JsonConvert.SerializeObject(updatePayload), Encoding.UTF8, "application/json");
+
+                    var response = await _httpClient.SendAsync(request, cancellationToken);
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        _logger.Information("Successfully updated status text based on colors for page {PageId}", pageId);
+                        return true;
+                    }
+                    else
+                    {
+                        var error = await response.Content.ReadAsStringAsync();
+                        _logger.Error("Failed to update page {PageId}: {Error}", pageId, error);
+                        return false;
+                    }
+                }
+
+                _logger.Information("No status text updates needed for page {PageId}", pageId);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to update status text for page {PageId}", pageId);
+                return false;
+            }
+        }
+
+        private bool UpdateTableStatusText(JToken tableNode)
+        {
+            bool hasChanges = false;
+            var tableContent = tableNode["content"]?.AsArray();
+
+            if (tableContent != null)
+            {
+                foreach (var row in tableContent)
+                {
+                    if (row["type"]?.ToString() == "tableRow")
+                    {
+                        var cells = row["content"]?.AsArray();
+                        if (cells != null && cells.Count() >= 2)
+                        {
+                            // First cell is field name, second is value
+                            var fieldName = ExtractTextFromCell(cells[0]);
+                            var updated = UpdateCellStatusText(cells[1], fieldName);
+                            if (updated) hasChanges = true;
+                        }
+                    }
+                }
+            }
+
+            return hasChanges;
+        }
+
+        private bool UpdateCellStatusText(JToken cell, string fieldName)
+        {
+            try
+            {
+                var content = cell["content"] as JArray;
+                if (content != null)
+                {
+                    foreach (var paragraph in content)
+                    {
+                        var paragraphContent = paragraph["content"] as JArray;
+                        if (paragraphContent != null)
+                        {
+                            foreach (var node in paragraphContent)
+                            {
+                                if (node["type"]?.ToString() == "status")
+                                {
+                                    var currentColor = node["attrs"]?["color"]?.ToString();
+                                    var currentText = node["attrs"]?["text"]?.ToString();
+                                    var expectedText = MapColorToValue(currentColor, fieldName);
+                                    var expectedColor = GetCorrectColorForText(expectedText);
+
+                                    Console.WriteLine($"DEBUG: {fieldName} - Current: {currentColor}/{currentText}, Expected: {expectedColor}/{expectedText}");
+
+                                    // Update if EITHER text OR color doesn't match
+                                    if (!string.IsNullOrEmpty(expectedText) &&
+                                        (currentText != expectedText || currentColor != expectedColor))
+                                    {
+                                        Console.WriteLine($"DEBUG: Updating {fieldName}: {currentText}→{expectedText}, {currentColor}→{expectedColor}");
+
+                                        node["attrs"]["text"] = expectedText;
+                                        node["attrs"]["color"] = expectedColor;
+
+                                        _logger.Debug("Updated {FieldName} status: text '{OldText}' → '{NewText}', color '{OldColor}' → '{NewColor}'",
+                                            fieldName, currentText, expectedText, currentColor, expectedColor);
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to update status text for field {FieldName}", fieldName);
+            }
+
+            return false;
+        }
+
+        private string GetCorrectColorForText(string text)
+        {
+            return text switch
+            {
+                "Red" => "red",
+                "Green" => "green",
+                "Amber" => "yellow",
+                "High" => "red",
+                "Medium" => "yellow",
+                "Low" => "green",
+                "Yes" => "green",
+                "No" => "red",
+                "Pending" => "yellow",
+                "APAC" => "green",    // You can choose colors for regions
+                "EMEA" => "green",
+                "NA" => "green",
+                _ => "grey"
+            };
+        }
+        #endregion
 
 
 
@@ -338,7 +790,7 @@ namespace ConfluenceSyncService.Services.Clients
         }
         #endregion
 
-        #region CheckForDatabase
+        #region CheckForDatabase - Old Delete if not using
         private bool CheckForDatabase(string? htmlContent)
         {
             if (string.IsNullOrEmpty(htmlContent))
@@ -349,6 +801,364 @@ namespace ConfluenceSyncService.Services.Clients
                    htmlContent.Contains("ac:name=\"database\"");
         }
         #endregion
+
+        #region CheckForDatabaseInADF
+        private bool CheckForDatabaseInAdf(string? adfContent)
+        {
+            if (string.IsNullOrEmpty(adfContent))
+                return false;
+
+            // Look for database indicators in ADF JSON
+            return adfContent.Contains("\"type\":\"extension\"") &&
+                   (adfContent.Contains("\"extensionType\":\"com.atlassian.confluence.macro.core\"") ||
+                    adfContent.Contains("\"extensionKey\":\"database\""));
+        }
+        #endregion
+
+
+        #region Helper methods for table creation
+        // Helper methods for table creation
+        private JObject CreateTableHeader(string text)
+        {
+            return new JObject
+            {
+                ["type"] = "tableHeader",
+                ["attrs"] = new JObject
+                {
+                    ["colspan"] = 1,
+                    ["rowspan"] = 1
+                },
+                ["content"] = new JArray
+        {
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = text,
+                        ["marks"] = new JArray
+                        {
+                            new JObject { ["type"] = "strong" }
+                        }
+                    }
+                }
+            }
+        }
+            };
+        }
+
+        private JObject CreateTransitionTrackerRow(string label, JObject valueCell)
+        {
+            return new JObject
+            {
+                ["type"] = "tableRow",
+                ["content"] = new JArray
+        {
+            // Label cell (left column)
+            new JObject
+            {
+                ["type"] = "tableHeader",
+                ["attrs"] = new JObject
+                {
+                    ["colspan"] = 1,
+                    ["rowspan"] = 1
+                },
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "paragraph",
+                        ["content"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "text",
+                                ["text"] = label,
+                                ["marks"] = new JArray
+                                {
+                                    new JObject { ["type"] = "strong" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            // Value cell (right column)
+            valueCell
+        }
+            };
+        }
+
+        private JObject CreateStatusCell(string color = "grey", string text = "")
+        {
+            return new JObject
+            {
+                ["type"] = "tableCell",
+                ["attrs"] = new JObject
+                {
+                    ["colspan"] = 1,
+                    ["rowspan"] = 1
+                },
+                ["content"] = new JArray
+        {
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "status",
+                        ["attrs"] = new JObject
+                        {
+                            ["color"] = color,
+                            ["text"] = text,
+                            ["localId"] = Guid.NewGuid().ToString()
+                        }
+                    }
+                }
+            }
+        }
+            };
+        }
+
+        private JObject CreateRegionDropdownCell(string selectedValue)
+        {
+            if (!string.IsNullOrEmpty(selectedValue))
+            {
+                var color = GetCorrectColorForText(selectedValue);
+                return CreateStatusMacro(color, selectedValue);
+            }
+            else
+            {
+                return CreateStatusMacro("grey", "Select Region");
+            }
+        }
+
+        private JObject CreateStatusMacro(string color, string text)
+        {
+            return new JObject
+            {
+                ["type"] = "tableCell",
+                ["attrs"] = new JObject
+                {
+                    ["colspan"] = 1,
+                    ["rowspan"] = 1
+                },
+                ["content"] = new JArray
+        {
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "status",
+                        ["attrs"] = new JObject
+                        {
+                            ["color"] = color,
+                            ["text"] = text,
+                            ["localId"] = Guid.NewGuid().ToString()
+                        }
+                    }
+                }
+            }
+        }
+            };
+        }
+
+        private JObject CreateTextCell(string text)
+        {
+            return new JObject
+            {
+                ["type"] = "tableCell",
+                ["attrs"] = new JObject
+                {
+                    ["colspan"] = 1,
+                    ["rowspan"] = 1
+                },
+                ["content"] = new JArray
+        {
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = string.IsNullOrEmpty(text) ? new JArray() : new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = text
+                    }
+                }
+            }
+        }
+            };
+        }
+
+        private JObject CreateDateCell(string dateValue)
+        {
+            var displayText = string.IsNullOrEmpty(dateValue)
+                ? "[Click to select date]"
+                : dateValue;
+
+            return CreateTextCell(displayText);
+        }
+
+        private JObject CreateSupportImpactCell(string selectedValue)
+        {
+            // Low = Green, Medium = Amber, High = Red
+            var color = selectedValue switch
+            {
+                "Low" => "green",
+                "Medium" => "yellow",
+                "High" => "red",
+                _ => "grey"
+            };
+
+            var text = string.IsNullOrEmpty(selectedValue) ? "Select Impact" : selectedValue;
+
+            return new JObject
+            {
+                ["type"] = "tableCell",
+                ["attrs"] = new JObject
+                {
+                    ["colspan"] = 1,
+                    ["rowspan"] = 1
+                },
+                ["content"] = new JArray
+        {
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "status",
+                        ["attrs"] = new JObject
+                        {
+                            ["color"] = color,
+                            ["text"] = text,
+                            ["localId"] = Guid.NewGuid().ToString()
+                        }
+                    }
+                }
+            }
+        }
+            };
+        }
+
+        private JObject CreateSupportAcceptedCell(string selectedValue)
+        {
+            // Yes = Green, Pending = Amber, No = Red
+            var color = selectedValue switch
+            {
+                "Yes" => "green",
+                "Pending" => "yellow",
+                "No" => "red",
+                _ => "grey"
+            };
+
+            var text = string.IsNullOrEmpty(selectedValue) ? "Select Status" : selectedValue;
+
+            return new JObject
+            {
+                ["type"] = "tableCell",
+                ["attrs"] = new JObject
+                {
+                    ["colspan"] = 1,
+                    ["rowspan"] = 1
+                },
+                ["content"] = new JArray
+        {
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "status",
+                        ["attrs"] = new JObject
+                        {
+                            ["color"] = color,
+                            ["text"] = text,
+                            ["localId"] = Guid.NewGuid().ToString()
+                        }
+                    }
+                }
+            }
+        }
+            };
+        }
+
+        private JObject CreateTextAreaCell(string text)
+        {
+            // Multi-line text for Notes
+            return CreateTextCell(string.IsNullOrEmpty(text) ? "[Enter notes here]" : text);
+        }
+
+        private JObject CreateSyncTrackerCell(string selectedValue)
+        {
+            // Yes = Green, No = Red
+            var color = selectedValue switch
+            {
+                "Yes" => "green",
+                "No" => "red",
+                _ => "grey"
+            };
+
+            var text = string.IsNullOrEmpty(selectedValue) ? "Select Yes/No" : selectedValue;
+
+            return new JObject
+            {
+                ["type"] = "tableCell",
+                ["attrs"] = new JObject
+                {
+                    ["colspan"] = 1,
+                    ["rowspan"] = 1
+                },
+                ["content"] = new JArray
+        {
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "status",
+                        ["attrs"] = new JObject
+                        {
+                            ["color"] = color,
+                            ["text"] = text,
+                            ["localId"] = Guid.NewGuid().ToString()
+                        }
+                    }
+                }
+            }
+        }
+            };
+        }
+
+        private JObject CreateRegionStatusCell(string selectedValue)
+        {
+            if (!string.IsNullOrEmpty(selectedValue))
+            {
+                var color = GetCorrectColorForText(selectedValue);
+                return CreateStatusCell(color, selectedValue);
+            }
+            else
+            {
+                return CreateStatusCell("grey", "Select Region");
+            }
+        }
+        #endregion
+
 
         #endregion
 
