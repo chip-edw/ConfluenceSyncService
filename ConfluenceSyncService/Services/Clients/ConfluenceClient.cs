@@ -17,6 +17,7 @@ namespace ConfluenceSyncService.Services.Clients
         private readonly ConfluenceTokenManager _tokenManager;
         private readonly string _cloudId;
         private readonly IConfiguration _configuration;
+        private readonly ConfluenceColorMappings _colorMappings;
 
         public ConfluenceClient(HttpClient httpClient, ConfluenceTokenManager tokenManager, IConfiguration configuration)
         {
@@ -25,6 +26,10 @@ namespace ConfluenceSyncService.Services.Clients
             _logger = Log.ForContext<ConfluenceClient>();
             _cloudId = _tokenManager.CloudId;
             _configuration = configuration;
+
+            // Bind the color mappings from configuration
+            _colorMappings = new ConfluenceColorMappings();
+            _configuration.GetSection("ConfluenceColorMappings").Bind(_colorMappings);
         }
 
         #region GetAllDatabaseItemsAsync
@@ -342,8 +347,8 @@ namespace ConfluenceSyncService.Services.Clients
             CreateTransitionTrackerRow("Phase", CreateTextCell("")), // Free form text
             CreateTransitionTrackerRow("Support Impact", CreateSupportImpactCell("")),
             CreateTransitionTrackerRow("Support Accepted", CreateSupportAcceptedCell("")),
-            CreateTransitionTrackerRow("Go-Live Date", CreateDateCell("")),
-            CreateTransitionTrackerRow("Support Go-Live Date", CreateDateCell("")),
+            CreateTransitionTrackerRow("Go-Live Date (YYYY-MM-DD)", CreateDateCell("")),
+            CreateTransitionTrackerRow("Support Go-Live Date (YYYY-MM-DD)", CreateDateCell("")),
             CreateTransitionTrackerRow("Notes", CreateTextAreaCell("")), // Text field
             CreateTransitionTrackerRow("Sync Tracker", CreateSyncTrackerCell("")) // Yes/No field
         }
@@ -589,7 +594,15 @@ namespace ConfluenceSyncService.Services.Clients
             if (mappingSection == null) return "";
 
             var mapping = _configuration.GetSection($"ConfluenceColorMappings:{mappingSection}")[color];
-            return mapping ?? "";
+
+            // If no mapping found, return a "please correct" message
+            if (string.IsNullOrEmpty(mapping))
+            {
+                _logger.Warning("Invalid color '{Color}' found for field '{FieldName}'. Prompting user to correct.", color, fieldName);
+                return "⚠️ Select correct color";
+            }
+
+            return mapping;
         }
         #endregion
 
@@ -722,21 +735,23 @@ namespace ConfluenceSyncService.Services.Clients
                                     var currentColor = node["attrs"]?["color"]?.ToString();
                                     var currentText = node["attrs"]?["text"]?.ToString();
                                     var expectedText = MapColorToValue(currentColor, fieldName);
-                                    var expectedColor = GetCorrectColorForText(expectedText);
 
-                                    Console.WriteLine($"DEBUG: {fieldName} - Current: {currentColor}/{currentText}, Expected: {expectedColor}/{expectedText}");
+                                    Console.WriteLine($"DEBUG: {fieldName} - Current: {currentColor}/{currentText}, Expected: {expectedText}");
 
-                                    // Update if EITHER text OR color doesn't match
-                                    if (!string.IsNullOrEmpty(expectedText) &&
-                                        (currentText != expectedText || currentColor != expectedColor))
+                                    // Check if this is an invalid color (returns warning message)
+                                    if (expectedText == "⚠️ Please select correct color")
                                     {
-                                        Console.WriteLine($"DEBUG: Updating {fieldName}: {currentText}→{expectedText}, {currentColor}→{expectedColor}");
-
+                                        Console.WriteLine($"DEBUG: Invalid color detected for {fieldName}, resetting to grey");
                                         node["attrs"]["text"] = expectedText;
-                                        node["attrs"]["color"] = expectedColor;
-
-                                        _logger.Debug("Updated {FieldName} status: text '{OldText}' → '{NewText}', color '{OldColor}' → '{NewColor}'",
-                                            fieldName, currentText, expectedText, currentColor, expectedColor);
+                                        node["attrs"]["color"] = "grey";
+                                        return true;
+                                    }
+                                    // Normal update for valid colors
+                                    else if (!string.IsNullOrEmpty(expectedText) && currentText != expectedText)
+                                    {
+                                        Console.WriteLine($"DEBUG: Updating {fieldName}: {currentText}→{expectedText}");
+                                        node["attrs"]["text"] = expectedText;
+                                        // Keep the current color since it's valid
                                         return true;
                                     }
                                 }
@@ -755,22 +770,20 @@ namespace ConfluenceSyncService.Services.Clients
 
         private string GetCorrectColorForText(string text)
         {
-            return text switch
+            // Check all mapping sections for this text value
+            foreach (var section in new[] { "StatusFF", "StatusCust", "SupportImpact", "SupportAccepted", "SyncTracker", "Region" })
             {
-                "Red" => "red",
-                "Green" => "green",
-                "Amber" => "yellow",
-                "High" => "red",
-                "Medium" => "yellow",
-                "Low" => "green",
-                "Yes" => "green",
-                "No" => "red",
-                "Pending" => "yellow",
-                "APAC" => "green",    // You can choose colors for regions
-                "EMEA" => "green",
-                "NA" => "green",
-                _ => "grey"
-            };
+                var mappings = _configuration.GetSection($"ConfluenceColorMappings:{section}").Get<Dictionary<string, string>>();
+                if (mappings != null)
+                {
+                    var colorKey = mappings.FirstOrDefault(kvp => kvp.Value.Equals(text, StringComparison.OrdinalIgnoreCase)).Key;
+                    if (!string.IsNullOrEmpty(colorKey))
+                        return colorKey;
+                }
+            }
+
+            // Fallback for any unmapped values
+            return "grey";
         }
         #endregion
 
@@ -894,16 +907,36 @@ namespace ConfluenceSyncService.Services.Clients
 
         private JObject CreateStatusCell(string color = "grey", string text = "")
         {
+            var legendText = "🔴 = Red | 🟡 = Amber | 🟢 = Green";
+
             return new JObject
             {
                 ["type"] = "tableCell",
-                ["attrs"] = new JObject
-                {
-                    ["colspan"] = 1,
-                    ["rowspan"] = 1
-                },
+                ["attrs"] = new JObject { ["colspan"] = 1, ["rowspan"] = 1 },
                 ["content"] = new JArray
         {
+            // Legend
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = legendText,
+                        ["marks"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "textColor",
+                                ["attrs"] = new JObject { ["color"] = "#6B7280" }
+                            }
+                        }
+                    }
+                }
+            },
+            // Status
             new JObject
             {
                 ["type"] = "paragraph",
@@ -1002,15 +1035,24 @@ namespace ConfluenceSyncService.Services.Clients
         private JObject CreateDateCell(string dateValue)
         {
             var displayText = string.IsNullOrEmpty(dateValue)
-                ? "[Click to select date]"
+                ? "YYYY-MM-DD"
                 : dateValue;
 
             return CreateTextCell(displayText);
         }
 
+        private string FormatDateDisplay(string dateValue)
+        {
+            if (DateTime.TryParse(dateValue, out var date))
+            {
+                return $"📅 {date:yyyy-MM-dd} ({date:dddd, MMMM d, yyyy})";
+            }
+            return $"⚠️ Invalid date: {dateValue}";
+        }
+
         private JObject CreateSupportImpactCell(string selectedValue)
         {
-            // Low = Green, Medium = Amber, High = Red
+            var legendText = "🟢 = Low | 🟡 = Medium | 🔴 = High";
             var color = selectedValue switch
             {
                 "Low" => "green",
@@ -1018,19 +1060,36 @@ namespace ConfluenceSyncService.Services.Clients
                 "High" => "red",
                 _ => "grey"
             };
-
             var text = string.IsNullOrEmpty(selectedValue) ? "Select Impact" : selectedValue;
 
             return new JObject
             {
                 ["type"] = "tableCell",
-                ["attrs"] = new JObject
-                {
-                    ["colspan"] = 1,
-                    ["rowspan"] = 1
-                },
+                ["attrs"] = new JObject { ["colspan"] = 1, ["rowspan"] = 1 },
                 ["content"] = new JArray
         {
+            // Legend
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = legendText,
+                        ["marks"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "textColor",
+                                ["attrs"] = new JObject { ["color"] = "#6B7280" }
+                            }
+                        }
+                    }
+                }
+            },
+            // Status
             new JObject
             {
                 ["type"] = "paragraph",
@@ -1054,7 +1113,7 @@ namespace ConfluenceSyncService.Services.Clients
 
         private JObject CreateSupportAcceptedCell(string selectedValue)
         {
-            // Yes = Green, Pending = Amber, No = Red
+            var legendText = "🟢 = Yes | 🟡 = Pending | 🔴 = No";
             var color = selectedValue switch
             {
                 "Yes" => "green",
@@ -1062,19 +1121,36 @@ namespace ConfluenceSyncService.Services.Clients
                 "No" => "red",
                 _ => "grey"
             };
-
             var text = string.IsNullOrEmpty(selectedValue) ? "Select Status" : selectedValue;
 
             return new JObject
             {
                 ["type"] = "tableCell",
-                ["attrs"] = new JObject
-                {
-                    ["colspan"] = 1,
-                    ["rowspan"] = 1
-                },
+                ["attrs"] = new JObject { ["colspan"] = 1, ["rowspan"] = 1 },
                 ["content"] = new JArray
         {
+            // Legend
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = legendText,
+                        ["marks"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "textColor",
+                                ["attrs"] = new JObject { ["color"] = "#6B7280" }
+                            }
+                        }
+                    }
+                }
+            },
+            // Status
             new JObject
             {
                 ["type"] = "paragraph",
@@ -1104,26 +1180,43 @@ namespace ConfluenceSyncService.Services.Clients
 
         private JObject CreateSyncTrackerCell(string selectedValue)
         {
-            // Yes = Green, No = Red
+            var legendText = "🟢 = Yes | 🔴 = No";
             var color = selectedValue switch
             {
                 "Yes" => "green",
                 "No" => "red",
                 _ => "grey"
             };
-
             var text = string.IsNullOrEmpty(selectedValue) ? "Select Yes/No" : selectedValue;
 
             return new JObject
             {
                 ["type"] = "tableCell",
-                ["attrs"] = new JObject
-                {
-                    ["colspan"] = 1,
-                    ["rowspan"] = 1
-                },
+                ["attrs"] = new JObject { ["colspan"] = 1, ["rowspan"] = 1 },
                 ["content"] = new JArray
         {
+            // Legend
+            new JObject
+            {
+                ["type"] = "paragraph",
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = legendText,
+                        ["marks"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "textColor",
+                                ["attrs"] = new JObject { ["color"] = "#6B7280" }
+                            }
+                        }
+                    }
+                }
+            },
+            // Status
             new JObject
             {
                 ["type"] = "paragraph",
@@ -1147,16 +1240,144 @@ namespace ConfluenceSyncService.Services.Clients
 
         private JObject CreateRegionStatusCell(string selectedValue)
         {
-            if (!string.IsNullOrEmpty(selectedValue))
+            var regionLabel = GetRegionLabelFromConfig(selectedValue);
+            var regionColor = GetRegionColorFromConfig(selectedValue);
+            var legendText = CreateRegionLegend();
+
+            return new JObject
             {
-                var color = GetCorrectColorForText(selectedValue);
-                return CreateStatusCell(color, selectedValue);
-            }
-            else
-            {
-                return CreateStatusCell("grey", "Select Region");
-            }
+                ["type"] = "tableCell",
+                ["attrs"] = new JObject
+                {
+                    ["colspan"] = 1,
+                    ["rowspan"] = 1
+                },
+                ["content"] = new JArray
+                {
+                    // Legend text from config
+                    new JObject
+                    {
+                        ["type"] = "paragraph",
+                        ["content"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "text",
+                                ["text"] = legendText,
+                                ["marks"] = new JArray
+                                {
+                                    new JObject
+                                    {
+                                        ["type"] = "textColor",
+                                        ["attrs"] = new JObject { ["color"] = "#6B7280" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    // Status indicator with dropdown capability
+                    new JObject
+                    {
+                        ["type"] = "paragraph",
+                        ["content"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "status",
+                                ["attrs"] = new JObject
+                                {
+                                    ["text"] = regionLabel,
+                                    ["color"] = regionColor,
+                                    ["localId"] = Guid.NewGuid().ToString(),
+                                    ["style"] = "",
+                                    ["data-region-selector"] = "true",
+                                    ["data-region-value"] = selectedValue ?? ""
+                                }
+                            }
+                        }
+                    }
+                }
+            };
         }
+
+        #region Configuration-Based Region Methods
+
+        private string GetRegionColorFromConfig(string regionValue)
+        {
+            if (string.IsNullOrEmpty(regionValue))
+                return "neutral";
+
+            // Find the color key that maps to this region value
+            var colorKey = _colorMappings.Region.FirstOrDefault(kvp =>
+                kvp.Value.Equals(regionValue, StringComparison.OrdinalIgnoreCase)).Key;
+
+            return colorKey ?? "neutral";
+        }
+
+        private string GetRegionLabelFromConfig(string regionValue)
+        {
+            if (string.IsNullOrEmpty(regionValue))
+                return "Select Region";
+
+            var colorKey = GetRegionColorFromConfig(regionValue);
+            var emoji = GetColorEmoji(colorKey);
+
+            return $"{emoji} {regionValue}";
+        }
+
+        private string CreateRegionLegend()
+        {
+            var legendParts = new List<string>();
+
+            foreach (var mapping in _colorMappings.Region)
+            {
+                var emoji = GetColorEmoji(mapping.Key);
+                legendParts.Add($"{emoji} = {mapping.Value}");
+            }
+
+            return string.Join(" | ", legendParts);
+        }
+
+        private string GetColorEmoji(string color)
+        {
+            return color?.ToLowerInvariant() switch
+            {
+                "green" => "🟢",
+                "yellow" => "🟡",
+                "purple" => "🟣",
+                "red" => "🔴",
+                "blue" => "🔵",
+                "grey" or "gray" => "⚪",
+                _ => "⚫"
+            };
+        }
+
+        // Helper method to get all region options for JavaScript (dropdown functionality later)
+        private string GetRegionOptionsJson()
+        {
+            var options = new List<object>
+            {
+                new { value = "", text = "Select Region", color = "neutral" }
+            };
+
+            foreach (var mapping in _colorMappings.Region)
+            {
+                var emoji = GetColorEmoji(mapping.Key);
+                options.Add(new
+                {
+                    value = mapping.Value,
+                    text = $"{emoji} {mapping.Value}",
+                    color = mapping.Key
+                });
+            }
+
+            return JsonConvert.SerializeObject(options);
+        }
+
+        #endregion
+
+
+
         #endregion
 
 

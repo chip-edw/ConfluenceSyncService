@@ -100,9 +100,10 @@ namespace ConfluenceSyncService
                 throw;
             }
 
-            // TEST: Create new Transition Tracker table with fixed Region field
+            ////TEST: Create new Transition Tracker table with fixed Region field
             //try
             //{
+            //    Console.WriteLine("\n\n");
             //    _logger.Information("=== TESTING NEW TABLE CREATION ===");
 
             //    var createSuccess = await _confluenceClient.CreateTransitionTrackerTableAsync("4554759", "ABB Con-cise Optical Group");
@@ -120,7 +121,7 @@ namespace ConfluenceSyncService
             // TEST: Update status text based on colors and parse table
             try
             {
-                _logger.Information("=== TESTING STATUS TEXT UPDATE AND PARSING ===");
+                _logger.Information("=== CONFLUENCE STATUS TEXT UPDATE AND PARSING ===");
 
                 // First, update any status text based on current colors
                 var updateSuccess = await _confluenceClient.UpdateStatusTextBasedOnColorAsync("4554759");
@@ -135,10 +136,6 @@ namespace ConfluenceSyncService
                     Console.WriteLine($"{kvp.Key}: {kvp.Value}");
                 }
 
-                if (tableData.Count == 0)
-                {
-                    Console.WriteLine("No table data found - check if table exists and has the correct structure");
-                }
             }
             catch (Exception ex)
             {
