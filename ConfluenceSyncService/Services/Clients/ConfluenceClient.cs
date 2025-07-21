@@ -70,7 +70,7 @@ namespace ConfluenceSyncService.Services.Clients
         #region GetDatabaseEntriesAsync
         public async Task<List<ConfluenceDatabaseEntryDto>> GetDatabaseEntriesAsync(string databaseId, CancellationToken cancellationToken = default)
         {
-            Console.WriteLine($"\n=== GETTING DATABASE WITH API TOKEN ===");
+            //Console.WriteLine($"\n=== GETTING DATABASE WITH API TOKEN ===");
 
             // Get credentials from configuration
             var username = _configuration["Confluence:Username"];
@@ -79,9 +79,9 @@ namespace ConfluenceSyncService.Services.Clients
 
             var databaseUrl = $"https://api.atlassian.com/ex/confluence/{cloudId}/rest/api/databases/{databaseId}?include-direct-children=true";
 
-            Console.WriteLine($"Database URL: {databaseUrl}");
-            Console.WriteLine($"Username: {username}");
-            Console.WriteLine($"Using API Token authentication");
+            //Console.WriteLine($"Database URL: {databaseUrl}");
+            //Console.WriteLine($"Username: {username}");
+            //Console.WriteLine($"Using API Token authentication");
 
             var request = new HttpRequestMessage(HttpMethod.Get, databaseUrl);
 
@@ -91,15 +91,14 @@ namespace ConfluenceSyncService.Services.Clients
 
             var response = await _httpClient.SendAsync(request, cancellationToken);
 
-            Console.WriteLine($"Response: {response.StatusCode}");
+            //Console.WriteLine($"Response: {response.StatusCode}");
 
             if (response.IsSuccessStatusCode)
             {
                 var content = await response.Content.ReadAsStringAsync(cancellationToken);
-                Console.WriteLine($"SUCCESS with API Token!");
-                Console.WriteLine($"Response sample: {content.Substring(0, Math.Min(500, content.Length))}...");
+                //Console.WriteLine($"SUCCESS with API Token!");
+                //Console.WriteLine($"Response sample: {content.Substring(0, Math.Min(500, content.Length))}...");
 
-                // TODO: Parse the actual database entries
                 return new List<ConfluenceDatabaseEntryDto>();
             }
             else
@@ -274,8 +273,8 @@ namespace ConfluenceSyncService.Services.Clients
             response.EnsureSuccessStatusCode();
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
             // DEBUG: Show raw response
-            Console.WriteLine($"DEBUG: Raw response length: {content.Length}");
-            Console.WriteLine($"DEBUG: Raw response sample: {content.Substring(0, Math.Min(500, content.Length))}");
+            //Console.WriteLine($"DEBUG: Raw response length: {content.Length}");
+            //Console.WriteLine($"DEBUG: Raw response sample: {content.Substring(0, Math.Min(500, content.Length))}");
             var json = JObject.Parse(content);
             var page = new ConfluencePage
             {
@@ -286,17 +285,16 @@ namespace ConfluenceSyncService.Services.Clients
                 HtmlContent = json["body"]?["storage"]?["value"]?.ToString(),
                 AdfContent = json["body"]?["atlas_doc_format"]?["value"]?.ToString()
             };
-            Console.WriteLine($"DEBUG: HtmlContent length: {page.HtmlContent?.Length ?? 0}");
-            if (!string.IsNullOrEmpty(page.HtmlContent))
-            {
-                Console.WriteLine($"DEBUG: HtmlContent sample: {page.HtmlContent.Substring(0, Math.Min(300, page.HtmlContent.Length))}");
-            }
-            Console.WriteLine($"DEBUG: AdfContent length: {page.AdfContent?.Length ?? 0}");
-            if (!string.IsNullOrEmpty(page.AdfContent))
-            {
-                // Console.WriteLine($"DEBUG: AdfContent sample: {page.AdfContent.Substring(0, Math.Min(500, page.AdfContent.Length))}");
-                Console.WriteLine($"DEBUG: Full AdfContent: {page.AdfContent}");
-            }
+            ////Console.WriteLine($"DEBUG: HtmlContent length: {page.HtmlContent?.Length ?? 0}");
+            //if (!string.IsNullOrEmpty(page.HtmlContent))
+            //{
+            //    Console.WriteLine($"DEBUG: HtmlContent sample: {page.HtmlContent.Substring(0, Math.Min(300, page.HtmlContent.Length))}");
+            //}
+            ////Console.WriteLine($"DEBUG: AdfContent length: {page.AdfContent?.Length ?? 0}");
+            //if (!string.IsNullOrEmpty(page.AdfContent))
+            //{
+            //    Console.WriteLine($"DEBUG: Full AdfContent: {page.AdfContent}");
+            //}
             // Parse timestamps
             if (DateTime.TryParse(json["created"]?.ToString(), out var createdAt))
                 page.CreatedAt = createdAt;
@@ -538,6 +536,7 @@ namespace ConfluenceSyncService.Services.Clients
             return "";
         }
 
+        // Replace this method in your ConfluenceClient.cs
         private string ExtractValueFromCell(JToken cell, string fieldName)
         {
             try
@@ -552,16 +551,49 @@ namespace ConfluenceSyncService.Services.Clients
                         {
                             foreach (var node in paragraphContent)
                             {
-                                // Check for status macro (color-based fields)
+                                // Check for status macro (color-based fields) - this is the actual value
                                 if (node["type"]?.ToString() == "status")
                                 {
+                                    var statusText = node["attrs"]?["text"]?.ToString();
                                     var color = node["attrs"]?["color"]?.ToString();
-                                    return MapColorToValue(color, fieldName);
+
+                                    // Skip legend text (contains = signs or multiple values)
+                                    if (!string.IsNullOrEmpty(statusText) &&
+                                        !statusText.Contains("=") &&
+                                        !statusText.Contains("|"))
+                                    {
+                                        _logger.Debug("Found status value for {FieldName}: '{StatusText}' (color: {Color})",
+                                            fieldName, statusText, color);
+                                        return statusText;
+                                    }
+                                    else
+                                    {
+                                        _logger.Debug("Skipping legend text for {FieldName}: '{StatusText}'",
+                                            fieldName, statusText);
+                                    }
                                 }
-                                // Check for regular text
+                                // Check for regular text (for Phase, Notes, etc.)
                                 else if (node["type"]?.ToString() == "text")
                                 {
-                                    return node["text"]?.ToString() ?? "";
+                                    var textValue = node["text"]?.ToString();
+
+                                    // Skip legend text and placeholder text
+                                    if (!string.IsNullOrEmpty(textValue) &&
+                                        !textValue.Contains("=") &&
+                                        !textValue.Contains("|") &&
+                                        !textValue.StartsWith("Format:") &&
+                                        !textValue.StartsWith("📅") &&
+                                        textValue != "YYYY-MM-DD")
+                                    {
+                                        _logger.Debug("Found text value for {FieldName}: '{TextValue}'",
+                                            fieldName, textValue);
+                                        return textValue;
+                                    }
+                                    else
+                                    {
+                                        _logger.Debug("Skipping legend/placeholder text for {FieldName}: '{TextValue}'",
+                                            fieldName, textValue);
+                                    }
                                 }
                             }
                         }
@@ -573,6 +605,7 @@ namespace ConfluenceSyncService.Services.Clients
                 _logger.Warning(ex, "Failed to extract value from cell for field {FieldName}", fieldName);
             }
 
+            _logger.Debug("No valid value found for field {FieldName}", fieldName);
             return "";
         }
 
@@ -736,12 +769,12 @@ namespace ConfluenceSyncService.Services.Clients
                                     var currentText = node["attrs"]?["text"]?.ToString();
                                     var expectedText = MapColorToValue(currentColor, fieldName);
 
-                                    Console.WriteLine($"DEBUG: {fieldName} - Current: {currentColor}/{currentText}, Expected: {expectedText}");
+                                    //Console.WriteLine($"DEBUG: {fieldName} - Current: {currentColor}/{currentText}, Expected: {expectedText}");
 
                                     // Check if this is an invalid color (returns warning message)
                                     if (expectedText == "⚠️ Please select correct color")
                                     {
-                                        Console.WriteLine($"DEBUG: Invalid color detected for {fieldName}, resetting to grey");
+                                        //Console.WriteLine($"DEBUG: Invalid color detected for {fieldName}, resetting to grey");
                                         node["attrs"]["text"] = expectedText;
                                         node["attrs"]["color"] = "grey";
                                         return true;
@@ -749,7 +782,7 @@ namespace ConfluenceSyncService.Services.Clients
                                     // Normal update for valid colors
                                     else if (!string.IsNullOrEmpty(expectedText) && currentText != expectedText)
                                     {
-                                        Console.WriteLine($"DEBUG: Updating {fieldName}: {currentText}→{expectedText}");
+                                        //Console.WriteLine($"DEBUG: Updating {fieldName}: {currentText}→{expectedText}");
                                         node["attrs"]["text"] = expectedText;
                                         // Keep the current color since it's valid
                                         return true;
@@ -787,7 +820,174 @@ namespace ConfluenceSyncService.Services.Clients
         }
         #endregion
 
+        #region UpdateTransitionTrackerFromSharePointAsync
+        public async Task<bool> UpdateTransitionTrackerFromSharePointAsync(string pageId, Dictionary<string, string> sharePointData, CancellationToken cancellationToken = default)
+        {
+            _logger.Information("Updating Transition Tracker table from SharePoint data for page {PageId}", pageId);
 
+            var page = await GetPageWithContentAsync(pageId, cancellationToken);
+
+            if (string.IsNullOrEmpty(page.AdfContent))
+            {
+                _logger.Warning("No ADF content found on page {PageId}", pageId);
+                return false;
+            }
+
+            try
+            {
+                var adf = JObject.Parse(page.AdfContent);
+                var content = adf["content"]?.AsArray();
+                bool hasChanges = false;
+
+                // Find and update the transition tracker table
+                foreach (var node in content)
+                {
+                    if (node["type"]?.ToString() == "table")
+                    {
+                        hasChanges = UpdateTableFromSharePointData(node, sharePointData);
+                        break;
+                    }
+                }
+
+                if (hasChanges)
+                {
+                    // Update the page with the modified content
+                    var baseUrl = _configuration["Confluence:BaseUrl"].Replace("/api/v2", "");
+                    var url = $"{baseUrl}/rest/api/content/{pageId}";
+
+                    var updatePayload = new
+                    {
+                        version = new { number = page.Version + 1 },
+                        title = page.Title,
+                        type = "page",
+                        body = new
+                        {
+                            atlas_doc_format = new
+                            {
+                                value = adf.ToString(Formatting.None),
+                                representation = "atlas_doc_format"
+                            }
+                        }
+                    };
+
+                    var request = new HttpRequestMessage(HttpMethod.Put, url);
+
+                    var username = _configuration["Confluence:Username"];
+                    var apiToken = _configuration["Confluence:ApiToken"];
+                    var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
+
+                    request.Content = new StringContent(JsonConvert.SerializeObject(updatePayload), Encoding.UTF8, "application/json");
+
+                    var response = await _httpClient.SendAsync(request, cancellationToken);
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        _logger.Information("Successfully updated Transition Tracker from SharePoint data for page {PageId}", pageId);
+                        return true;
+                    }
+                    else
+                    {
+                        var error = await response.Content.ReadAsStringAsync();
+                        _logger.Error("Failed to update page {PageId}: {Error}", pageId, error);
+                        return false;
+                    }
+                }
+
+                _logger.Information("No updates needed for page {PageId}", pageId);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to update Transition Tracker from SharePoint for page {PageId}", pageId);
+                return false;
+            }
+        }
+
+        private bool UpdateTableFromSharePointData(JToken tableNode, Dictionary<string, string> sharePointData)
+        {
+            bool hasChanges = false;
+            var tableContent = tableNode["content"]?.AsArray();
+
+            if (tableContent != null)
+            {
+                foreach (var row in tableContent)
+                {
+                    if (row["type"]?.ToString() == "tableRow")
+                    {
+                        var cells = row["content"]?.AsArray();
+                        if (cells != null && cells.Count() >= 2)
+                        {
+                            // First cell is field name, second is value
+                            var fieldName = ExtractTextFromCell(cells[0]);
+
+                            // Check if we have SharePoint data for this field
+                            if (sharePointData.ContainsKey(fieldName))
+                            {
+                                var newValue = sharePointData[fieldName];
+                                var updated = UpdateCellValue(cells[1], fieldName, newValue);
+                                if (updated) hasChanges = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return hasChanges;
+        }
+
+        private bool UpdateCellValue(JToken cell, string fieldName, string newValue)
+        {
+            try
+            {
+                var content = cell["content"] as JArray;
+                if (content != null)
+                {
+                    foreach (var paragraph in content)
+                    {
+                        var paragraphContent = paragraph["content"] as JArray;
+                        if (paragraphContent != null)
+                        {
+                            foreach (var node in paragraphContent)
+                            {
+                                // Update status macro fields (color-based)
+                                if (node["type"]?.ToString() == "status")
+                                {
+                                    var currentText = node["attrs"]?["text"]?.ToString();
+                                    if (currentText != newValue && !string.IsNullOrEmpty(newValue))
+                                    {
+                                        node["attrs"]["text"] = newValue;
+                                        // Update color based on the new value
+                                        var newColor = GetCorrectColorForText(newValue);
+                                        node["attrs"]["color"] = newColor;
+                                        _logger.Information("Updated {FieldName}: {OldValue} → {NewValue}", fieldName, currentText, newValue);
+                                        return true;
+                                    }
+                                }
+                                // Update text fields
+                                else if (node["type"]?.ToString() == "text")
+                                {
+                                    var currentText = node["text"]?.ToString();
+                                    if (currentText != newValue && !string.IsNullOrEmpty(newValue))
+                                    {
+                                        node["text"] = newValue;
+                                        _logger.Information("Updated {FieldName}: {OldValue} → {NewValue}", fieldName, currentText, newValue);
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Failed to update cell value for field {FieldName}", fieldName);
+            }
+
+            return false;
+        }
+        #endregion
 
 
 

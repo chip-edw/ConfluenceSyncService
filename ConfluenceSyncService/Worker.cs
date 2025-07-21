@@ -36,12 +36,13 @@ namespace ConfluenceSyncService
         private readonly ConfluenceTokenManager _confluenceTokenManager;
         private readonly ConfluenceClient _confluenceClient;
         private readonly ISyncOrchestratorService _syncOrchestratorService;
+        private readonly SharePointClient _sharePointClient;
 
 
 
         public Worker(ConfidentialClientApp confidentialClientApp, IConfiguration configuration, ILogger<Worker> logger, IServiceScopeFactory serviceScopeFactory,
             StartupLoaderService startupLoaderService, DbContextOptions<ApplicationDbContext> dbOptions, ConfluenceTokenManager confluenceTokenManager,
-            ConfluenceClient confluenceClient, ISyncOrchestratorService syncOrchestratorService)
+            ConfluenceClient confluenceClient, ISyncOrchestratorService syncOrchestratorService, SharePointClient sharePointClient)
         {
             _confidentialClientApp = confidentialClientApp;
             _logger = Log.ForContext<Worker>();
@@ -52,6 +53,7 @@ namespace ConfluenceSyncService
             _confluenceTokenManager = confluenceTokenManager ?? throw new ArgumentNullException(nameof(confluenceTokenManager));
             _confluenceClient = confluenceClient;
             _syncOrchestratorService = syncOrchestratorService ?? throw new ArgumentException(nameof(syncOrchestratorService));
+            _sharePointClient = sharePointClient;
         }
 
         #endregion
@@ -100,6 +102,29 @@ namespace ConfluenceSyncService
                 throw;
             }
 
+            ////Validation: Get the SharePoint List actual Field Values
+            //try
+            //{
+            //    Console.WriteLine("\n\n");
+            //    _logger.Information("=== DISCOVERING SHAREPOINT FIELD NAMES ===");
+
+            //    var fieldMap = await _sharePointClient.GetListFieldsAsync(
+            //        "v7n2m.sharepoint.com,d1ee4683-057e-41c1-abe8-8b7fcf24a609,37b9c1e6-3b8e-4e8e-981b-67291632e4c3",
+            //        "Transition Tracker");
+
+            //    Console.WriteLine("SharePoint Field Mappings:");
+            //    foreach (var field in fieldMap)
+            //    {
+            //        Console.WriteLine($"Display: '{field.Key}' -> Internal: '{field.Value}'");
+            //    }
+            //}
+            //catch (Exception ex)
+            //{
+            //    _logger.Error(ex, "Failed to get SharePoint field names");
+            //}
+            //_logger.Information("=== END SHAREPOINT FIELD NAMES DISCOVERY ===");
+
+
             ////TEST: Create new Transition Tracker table with fixed Region field
             //try
             //{
@@ -117,31 +142,31 @@ namespace ConfluenceSyncService
 
 
 
-            Console.Write("\n\n");
-            // TEST: Update status text based on colors and parse table
-            try
-            {
-                _logger.Information("=== CONFLUENCE STATUS TEXT UPDATE AND PARSING ===");
+            //Console.Write("\n\n");
+            //// TEST: Update status text based on colors and parse table
+            //try
+            //{
+            //    _logger.Information("=== CONFLUENCE STATUS TEXT UPDATE AND PARSING ===");
 
-                // First, update any status text based on current colors
-                var updateSuccess = await _confluenceClient.UpdateStatusTextBasedOnColorAsync("4554759");
-                Console.WriteLine($"Status text update successful: {updateSuccess}");
+            //    // First, update any status text based on current colors
+            //    var updateSuccess = await _confluenceClient.UpdateStatusTextBasedOnColorAsync("4554759");
+            //    Console.WriteLine($"Status text update successful: {updateSuccess}");
 
-                // Then parse the table data
-                var tableData = await _confluenceClient.ParseTransitionTrackerTableAsync("4554759");
+            //    // Then parse the table data
+            //    var tableData = await _confluenceClient.ParseTransitionTrackerTableAsync("4554759");
 
-                Console.WriteLine("=== PARSED TABLE DATA ===");
-                foreach (var kvp in tableData)
-                {
-                    Console.WriteLine($"{kvp.Key}: {kvp.Value}");
-                }
+            //    Console.WriteLine("=== PARSED TABLE DATA ===");
+            //    foreach (var kvp in tableData)
+            //    {
+            //        Console.WriteLine($"{kvp.Key}: {kvp.Value}");
+            //    }
 
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Failed to test status update and parsing");
-            }
-            _logger.Information("=== END STATUS UPDATE AND PARSING TEST ===");
+            //}
+            //catch (Exception ex)
+            //{
+            //    _logger.Error(ex, "Failed to test status update and parsing");
+            //}
+            //_logger.Information("=== END STATUS UPDATE AND PARSING TEST ===");
 
             //########################################################################################
 
@@ -284,8 +309,18 @@ namespace ConfluenceSyncService
 
                         #region Invoke SyncOrchestratorService
 
-                        // Run sync here
-                        await _syncOrchestratorService.RunSyncAsync(cancellationToken);
+                        _logger.Information("=== STARTING TABLE SYNC CYCLE ===");
+                        try
+                        {
+                            // Run sync here
+                            await _syncOrchestratorService.RunSyncAsync(cancellationToken);
+                            _logger.Information("=== TABLE SYNC CYCLE COMPLETED ===");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "=== TABLE SYNC CYCLE FAILED ===");
+                            // Don't re-throw - let the worker continue
+                        }
 
                         #endregion
 

@@ -1,8 +1,12 @@
 ﻿using ConfluenceSyncService.Dtos;
+using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Serilog;
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
+using System.Text;
 
 namespace ConfluenceSyncService.Services.Clients
 {
@@ -11,6 +15,7 @@ namespace ConfluenceSyncService.Services.Clients
         private readonly HttpClient _httpClient;
         private readonly ConfidentialClientApp _confidentialClientApp;
         private readonly IConfiguration _configuration;
+        private readonly Serilog.ILogger _logger;
         // Add a cache for list IDs
         private readonly ConcurrentDictionary<string, string> _listIdCache = new();
 
@@ -19,8 +24,283 @@ namespace ConfluenceSyncService.Services.Clients
             _httpClient = httpClient;
             _confidentialClientApp = confidentialClientApp;
             _configuration = configuration;
+            _logger = Log.ForContext<SharePointClient>();
         }
 
+        #region Table Sync Methods
+
+        /// <summary>
+        /// Creates a new list item in SharePoint
+        /// </summary>
+        public async Task<string> CreateListItemAsync(string siteId, string listName, Dictionary<string, object> fields)
+        {
+            _logger.Information("Creating new SharePoint list item in {ListName}", listName);
+
+            try
+            {
+                var listId = await GetListIdByNameAsync(siteId, listName);
+                var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items";
+
+                var payload = new
+                {
+                    fields = fields
+                };
+
+                var request = new HttpRequestMessage(HttpMethod.Post, url);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+                request.Content = new StringContent(JsonConvert.SerializeObject(payload), Encoding.UTF8, "application/json");
+
+                var response = await _httpClient.SendAsync(request);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.Error("Failed to create SharePoint item: {StatusCode} - {Error}", response.StatusCode, errorContent);
+                    throw new HttpRequestException($"Failed to create SharePoint item: {response.StatusCode} - {errorContent}");
+                }
+
+                var content = await response.Content.ReadAsStringAsync();
+                var json = JObject.Parse(content);
+                var itemId = json["id"]?.ToString();
+
+                _logger.Information("Successfully created SharePoint item with ID: {ItemId}", itemId);
+                return itemId ?? throw new InvalidOperationException("Created item ID was null");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error creating SharePoint list item");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Updates an existing list item in SharePoint
+        /// </summary>
+        public async Task UpdateListItemAsync(string siteId, string listName, string itemId, Dictionary<string, object> fields)
+        {
+            _logger.Information("Updating SharePoint list item {ItemId} in {ListName}", itemId, listName);
+
+            // ADD THIS DEBUG LOGGING
+            _logger.Information("Fields being sent to SharePoint:");
+            foreach (var field in fields)
+            {
+                _logger.Information("  {FieldName}: {FieldValue}", field.Key, field.Value);
+            }
+
+            try
+            {
+                var listId = await GetListIdByNameAsync(siteId, listName);
+                var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{itemId}/fields";
+
+                var request = new HttpRequestMessage(HttpMethod.Patch, url);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+
+                // LOG THE JSON BEING SENT
+                var jsonPayload = JsonConvert.SerializeObject(fields, Formatting.Indented);
+                _logger.Information("JSON payload being sent to SharePoint: {JsonPayload}", jsonPayload);
+
+                request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                var response = await _httpClient.SendAsync(request);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.Error("Failed to update SharePoint item {ItemId}: {StatusCode} - {Error}", itemId, response.StatusCode, errorContent);
+                    throw new HttpRequestException($"Failed to update SharePoint item {itemId}: {response.StatusCode} - {errorContent}");
+                }
+
+                _logger.Information("Successfully updated SharePoint item {ItemId}", itemId);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error updating SharePoint list item {ItemId}", itemId);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Gets a specific list item by ID
+        /// </summary>
+        public async Task<SharePointListItemDto?> GetListItemAsync(string siteId, string listName, string itemId)
+        {
+            try
+            {
+                var listId = await GetListIdByNameAsync(siteId, listName);
+                var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{itemId}?$expand=fields";
+
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+
+                var response = await _httpClient.SendAsync(request);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        return null;
+                    }
+
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    throw new HttpRequestException($"Failed to get SharePoint item {itemId}: {response.StatusCode} - {errorContent}");
+                }
+
+                var content = await response.Content.ReadAsStringAsync();
+                var json = JObject.Parse(content);
+
+                var id = json["id"]?.ToString();
+                var modifiedStr = json["lastModifiedDateTime"]?.ToString();
+                var modified = DateTime.TryParse(modifiedStr, out var parsed) ? parsed : DateTime.UtcNow;
+                var fields = json["fields"]?.ToObject<Dictionary<string, object>>() ?? new();
+
+                return new SharePointListItemDto
+                {
+                    Id = id,
+                    LastModifiedUtc = modified,
+                    Title = fields.TryGetValue("Title", out var titleVal) ? titleVal?.ToString() : "",
+                    Fields = fields
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error getting SharePoint list item {ItemId}", itemId);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Token validation method for orchestrator
+        /// </summary>
+        public async Task<bool> ValidateTokenAsync()
+        {
+            try
+            {
+                // Simple token validation - try to make a basic Graph API call
+                var url = "https://graph.microsoft.com/v1.0/me";
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+
+                var response = await _httpClient.SendAsync(request);
+                return response.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Token refresh method for orchestrator
+        /// </summary>
+        public async Task RefreshTokenAsync()
+        {
+            // Token refresh is handled by ConfidentialClientApp.GetAccessToken()
+            // It automatically refreshes if needed
+            await _confidentialClientApp.GetAccessToken();
+        }
+
+        #endregion
+
+        #region Updated GetAllListItemsAsync for new model
+
+        public async Task<List<SharePointListItem>> GetAllListItemsAsync(string siteId, string listName)
+        {
+            var results = new List<SharePointListItem>();
+
+            try
+            {
+                var listId = await GetListIdByNameAsync(siteId, listName);
+                var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items?$expand=fields";
+
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+
+                var response = await _httpClient.SendAsync(request);
+                response.EnsureSuccessStatusCode();
+
+                var content = await response.Content.ReadAsStringAsync();
+                var json = JObject.Parse(content);
+
+                foreach (var item in json["value"] ?? Enumerable.Empty<JToken>())
+                {
+                    var id = item["id"]?.ToString() ?? "";
+                    var modifiedStr = item["lastModifiedDateTime"]?.ToString();
+                    var modified = DateTime.TryParse(modifiedStr, out var parsed) ? parsed : DateTime.UtcNow;
+
+                    var fields = item["fields"]?.ToObject<Dictionary<string, object>>() ?? new();
+
+                    results.Add(new SharePointListItem
+                    {
+                        Id = id,
+                        Title = fields.TryGetValue("Title", out var titleVal) ? titleVal?.ToString() ?? "" : "",
+                        LastModifiedUtc = modified,
+                        Fields = fields
+                    });
+                }
+
+                _logger.Information("Retrieved {Count} items from SharePoint list {ListName}", results.Count, listName);
+                return results;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error getting all list items from {ListName}", listName);
+                throw;
+            }
+        }
+
+        #endregion
+
+        #region GetListFieldsAsync
+        /// <summary>
+        /// Gets the SharePoint list schema to discover actual field names
+        /// </summary>
+        public async Task<Dictionary<string, string>> GetListFieldsAsync(string siteId, string listName)
+        {
+            try
+            {
+                var listId = await GetListIdByNameAsync(siteId, listName);
+                var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/columns";
+
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+
+                var response = await _httpClient.SendAsync(request);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.Error("Failed to get list fields: {StatusCode} - {Error}", response.StatusCode, errorContent);
+                    throw new HttpRequestException($"Failed to get list fields: {response.StatusCode} - {errorContent}");
+                }
+
+                var content = await response.Content.ReadAsStringAsync();
+                var json = JObject.Parse(content);
+
+                var fieldMap = new Dictionary<string, string>();
+
+                foreach (var field in json["value"] ?? Enumerable.Empty<JToken>())
+                {
+                    var displayName = field["displayName"]?.ToString();
+                    var name = field["name"]?.ToString();
+
+                    if (!string.IsNullOrEmpty(displayName) && !string.IsNullOrEmpty(name))
+                    {
+                        fieldMap[displayName] = name;
+                        _logger.Information("SharePoint Field: '{DisplayName}' -> '{InternalName}'", displayName, name);
+                    }
+                }
+
+                return fieldMap;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error getting SharePoint list fields");
+                throw;
+            }
+        }
+        #endregion
+
+        #region GetRecentlyModifiedItemsAsync
         public async Task<List<SharePointListItemDto>> GetRecentlyModifiedItemsAsync(string sitePath, string listName, DateTime sinceUtc)
         {
             var results = new List<SharePointListItemDto>();
@@ -106,7 +386,7 @@ namespace ConfluenceSyncService.Services.Clients
                 throw;
             }
         }
-
+        #endregion
 
         // Fallback method - get all items and filter in memory (with configurable safety limits)
         private async Task<List<SharePointListItemDto>> GetRecentlyModifiedItemsWithoutFilterAsync(string sitePath, string listName, DateTime sinceUtc)
@@ -348,42 +628,5 @@ namespace ConfluenceSyncService.Services.Clients
             throw new InvalidOperationException($"List '{listName}' not found in alternative site path '{altSitePath}'");
         }
 
-        public async Task<List<SharePointListItemDto>> GetAllListItemsAsync(string siteId, string listId)
-        {
-            var results = new List<SharePointListItemDto>();
-
-            var encodedSiteId = Uri.EscapeDataString(siteId);
-            var encodedListId = Uri.EscapeDataString(listId);
-
-            var url = $"https://graph.microsoft.com/v1.0/sites/{encodedSiteId}/lists/{encodedListId}/items?$expand=fields";
-
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
-
-            var response = await _httpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-
-            var content = await response.Content.ReadAsStringAsync();
-            var json = JObject.Parse(content);
-
-            foreach (var item in json["value"] ?? Enumerable.Empty<JToken>())
-            {
-                var id = item["id"]?.ToString();
-                var modifiedStr = item["lastModifiedDateTime"]?.ToString();
-                var modified = DateTime.TryParse(modifiedStr, out var parsed) ? parsed : DateTime.UtcNow;
-
-                var fields = item["fields"]?.ToObject<Dictionary<string, object>>() ?? new();
-
-                results.Add(new SharePointListItemDto
-                {
-                    Id = id,
-                    LastModifiedUtc = modified,
-                    Title = fields.TryGetValue("Title", out var titleVal) ? titleVal?.ToString() : "",
-                    Fields = fields
-                });
-            }
-
-            return results;
-        }
     }
 }

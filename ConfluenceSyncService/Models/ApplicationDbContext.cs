@@ -10,6 +10,7 @@ namespace ConfluenceSyncService.Models
             //Empty constructor body. Was bugging me so I put this comment here.
         }
         public DbSet<ConfigStore> ConfigStore { get; set; }
+        public DbSet<TableSyncState> TableSyncStates { get; set; }
         public DbSet<SyncState> SyncStates { get; set; }
 
 
@@ -103,6 +104,14 @@ namespace ConfluenceSyncService.Models
 
                 // Optional: Add a unique constraint if you want to prevent duplicate pairs
                 entity.HasIndex(e => new { e.SharePointId, e.ConfluenceId }).IsUnique(false);
+            });
+
+            modelBuilder.Entity<TableSyncState>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.ConfluencePageId).IsRequired();
+                entity.Property(e => e.CustomerName).IsRequired();
+                entity.HasIndex(e => e.ConfluencePageId).IsUnique();
             });
         }
         #endregion
