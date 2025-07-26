@@ -27,4 +27,11 @@ The system is architected for long-term extensibility to integrate other SaaS pl
 - **Atlassian Confluence Cloud REST API v2 with Scoped API Tokens**
 - **GitHub (source repository management)**
 
+
+## Documentation
+
+- **[Sync Architecture Documentation](./docs/SYNC_ARCHITECTURE.md)** - Detailed technical documentation of the bidirectional sync system, including field mapping, change detection, and performance characteristics
+- **API Documentation** - *(Coming Soon)*
+- **Deployment Guide** - *(Coming Soon)*
+
 ---

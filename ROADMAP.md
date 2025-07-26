@@ -21,6 +21,12 @@
 - [ ] **Confluence → SharePoint sync implementation**
 - [ ] **SyncMapper**: Bi-directional field mapping between SharePoint List fields and Confluence content (planned, not started)
 
+### 🚀 Performance & Optimization
+- [ ] **Field-level change detection with hashing**: Implement hash-based change detection for Confluence HTML table fields to only sync modified fields to SharePoint, reducing API calls and improving performance
+- [ ] **Batch API operations**: Implement Microsoft Graph batch requests for multiple SharePoint updates
+- [ ] **Delta queries**: Use SharePoint delta queries to only retrieve changed items
+- [ ] **Caching layer**: Add Redis/in-memory caching for frequently accessed field mappings
+
 ### 📦 Secrets & Profile Management
 - [ ] **Profile-based configuration**: Load config by `profileKey` to support multi-tenant setups
 - [ ] **Azure Key Vault Provider**: Optional secrets provider to replace SQLite in production

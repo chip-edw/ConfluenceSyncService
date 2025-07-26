@@ -131,7 +131,7 @@ namespace ConfluenceSyncService
             //    Console.WriteLine("\n\n");
             //    _logger.Information("=== TESTING NEW TABLE CREATION ===");
 
-            //    var createSuccess = await _confluenceClient.CreateTransitionTrackerTableAsync("4554759", "ABB Con-cise Optical Group");
+            //    var createSuccess = await _confluenceClient.CreateTransitionTrackerTableAsync("6324227", "Customer Wiki Template");
             //    Console.WriteLine($"Table creation successful: {createSuccess}");
             //}
             //catch (Exception ex)

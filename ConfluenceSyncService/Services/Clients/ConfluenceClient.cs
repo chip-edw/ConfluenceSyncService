@@ -176,6 +176,31 @@ namespace ConfluenceSyncService.Services.Clients
         }
         #endregion
 
+        #region CreateCustomerPageFromTemplateAsync
+        public async Task<string> CreateCustomerPageFromTemplateAsync(string customerName, CancellationToken cancellationToken = default)
+        {
+            var templatePageId = _configuration["Confluence:CustomerWikiTemplateId"];
+            if (string.IsNullOrEmpty(templatePageId))
+            {
+                throw new InvalidOperationException("CustomerWikiTemplateId not configured in appsettings.json");
+            }
+
+            _logger.Information("Creating customer page for {CustomerName} using template {TemplatePageId}", customerName, templatePageId);
+
+            // 1. Get the template page content
+            var templatePage = await GetPageWithContentAsync(templatePageId, cancellationToken);
+            if (templatePage == null)
+            {
+                throw new InvalidOperationException($"Template page with ID '{templatePageId}' not found in Confluence");
+            }
+
+            // 2. Duplicate the template
+            var newPageId = await DuplicatePageAsync(templatePage, customerName, cancellationToken);
+
+            return newPageId;
+        }
+        #endregion
+
         #region GetRecentlyModifiedItemsAsync
         public async Task<List<ConfluenceRow>> GetRecentlyModifiedItemsAsync(string databaseId, DateTime sinceUtc)
         {
@@ -950,24 +975,60 @@ namespace ConfluenceSyncService.Services.Clients
                         {
                             foreach (var node in paragraphContent)
                             {
-                                // Update status macro fields (color-based)
+                                // Update status macro fields (color-based) - SKIP LEGEND TEXT
                                 if (node["type"]?.ToString() == "status")
                                 {
                                     var currentText = node["attrs"]?["text"]?.ToString();
-                                    if (currentText != newValue && !string.IsNullOrEmpty(newValue))
+
+                                    // SKIP if this looks like legend text (contains = or |)
+                                    if (!string.IsNullOrEmpty(currentText) &&
+                                        (currentText.Contains("=") || currentText.Contains("|")))
+                                    {
+                                        continue; // Skip legend text, don't update it
+                                    }
+
+                                    // NEW RULE: If Confluence has placeholder text, always use SharePoint value
+                                    if (IsPlaceholderText(currentText) && !string.IsNullOrEmpty(newValue))
                                     {
                                         node["attrs"]["text"] = newValue;
-                                        // Update color based on the new value
+                                        var newColor = GetCorrectColorForText(newValue);
+                                        node["attrs"]["color"] = newColor;
+                                        _logger.Information("Replaced placeholder text in {FieldName}: '{PlaceholderText}' → '{NewValue}'",
+                                            fieldName, currentText, newValue);
+                                        return true;
+                                    }
+
+                                    // Normal update for non-placeholder values
+                                    if (currentText != newValue && !string.IsNullOrEmpty(newValue) && !IsPlaceholderText(currentText))
+                                    {
+                                        node["attrs"]["text"] = newValue;
                                         var newColor = GetCorrectColorForText(newValue);
                                         node["attrs"]["color"] = newColor;
                                         _logger.Information("Updated {FieldName}: {OldValue} → {NewValue}", fieldName, currentText, newValue);
                                         return true;
                                     }
                                 }
-                                // Update text fields
+                                // Update text fields (like Phase, Notes, Dates)
                                 else if (node["type"]?.ToString() == "text")
                                 {
                                     var currentText = node["text"]?.ToString();
+
+                                    // SKIP if this looks like legend text (contains = or |)
+                                    if (!string.IsNullOrEmpty(currentText) &&
+                                        (currentText.Contains("=") || currentText.Contains("|")))
+                                    {
+                                        continue; // Skip legend text, don't update it
+                                    }
+
+                                    // NEW RULE: Handle text field placeholders
+                                    if (IsPlaceholderText(currentText) && !string.IsNullOrEmpty(newValue))
+                                    {
+                                        node["text"] = newValue;
+                                        _logger.Information("Replaced placeholder text in {FieldName}: '{PlaceholderText}' → '{NewValue}'",
+                                            fieldName, currentText, newValue);
+                                        return true;
+                                    }
+
                                     if (currentText != newValue && !string.IsNullOrEmpty(newValue))
                                     {
                                         node["text"] = newValue;
@@ -987,19 +1048,151 @@ namespace ConfluenceSyncService.Services.Clients
 
             return false;
         }
+
         #endregion
 
+        #region DuplicatePageAsync
+        private async Task<string> DuplicatePageAsync(ConfluencePage templatePage, string customerName, CancellationToken cancellationToken = default)
+        {
+            _logger.Information("Duplicating template page {TemplateId} for customer {CustomerName}", templatePage.Id, customerName);
 
+            try
+            {
+                var parentPageId = _configuration["Confluence:CustomersParentPageId"];
+                var spaceKey = _configuration["Confluence:SpaceKey"];
+
+                if (string.IsNullOrEmpty(parentPageId))
+                    throw new InvalidOperationException("CustomersParentPageId not configured in appsettings.json");
+                if (string.IsNullOrEmpty(spaceKey))
+                    throw new InvalidOperationException("SpaceKey not configured in appsettings.json");
+
+                var baseUrl = _configuration["Confluence:BaseUrl"].Replace("/api/v2", "");
+                var url = $"{baseUrl}/rest/api/content";
+
+                var newPagePayload = new
+                {
+                    type = "page",
+                    title = customerName,
+                    space = new { key = spaceKey },
+                    ancestors = new[] { new { id = parentPageId } },
+                    body = new
+                    {
+                        storage = new
+                        {
+                            value = templatePage.HtmlContent ?? "",
+                            representation = "storage"
+                        }
+                    }
+                };
+
+                var jsonPayload = JsonConvert.SerializeObject(newPagePayload);
+                _logger.Debug("Page creation payload: {Payload}", jsonPayload);
+
+                var request = new HttpRequestMessage(HttpMethod.Post, url);
+
+                var username = _configuration["Confluence:Username"];
+                var apiToken = _configuration["Confluence:ApiToken"];
+                var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
+                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
+
+                request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                var response = await _httpClient.SendAsync(request, cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.Error("Page creation failed with {StatusCode}: {ErrorContent}", response.StatusCode, errorContent);
+                    throw new HttpRequestException($"Failed to create page: {response.StatusCode} - {errorContent}");
+                }
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken);
+                var json = JObject.Parse(content);
+
+                var newPageId = json["id"]?.ToString();
+                if (string.IsNullOrEmpty(newPageId))
+                    throw new InvalidOperationException("Failed to get new page ID from Confluence response");
+
+                _logger.Information("Successfully created new customer page {PageId} for {CustomerName}", newPageId, customerName);
+                return newPageId;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to duplicate template page for customer {CustomerName}", customerName);
+                throw;
+            }
+        }
+        #endregion
+
+        #region GetPageUrlAsync
+        public async Task<string> GetPageUrlAsync(string pageId, CancellationToken cancellationToken = default)
+        {
+            _logger.Information("Getting page URL for page {PageId}", pageId);
+
+            try
+            {
+                // Use v1 API to get page info with web URL
+                var baseUrl = _configuration["Confluence:BaseUrl"].Replace("/api/v2", "");
+                var url = $"{baseUrl}/rest/api/content/{pageId}";
+
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+
+                // Use API Token auth
+                var username = _configuration["Confluence:Username"];
+                var apiToken = _configuration["Confluence:ApiToken"];
+                var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
+                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
+
+                var response = await _httpClient.SendAsync(request, cancellationToken);
+                response.EnsureSuccessStatusCode();
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken);
+                var json = JObject.Parse(content);
+
+                // Extract the web UI URL
+                var webUrl = json["_links"]?["webui"]?.ToString();
+
+                if (string.IsNullOrEmpty(webUrl))
+                {
+                    _logger.Warning("No webui URL found for page {PageId}", pageId);
+                    // Construct fallback URL
+                    var confluenceBaseUrl = _configuration["Confluence:BaseUrl"].Replace("/wiki/api/v2", "").Replace("/api/v2", "");
+                    webUrl = $"{confluenceBaseUrl}/wiki/spaces/~{pageId}";
+                }
+                else
+                {
+                    // webui URL is usually relative, make it absolute
+                    if (webUrl.StartsWith("/"))
+                    {
+                        var confluenceBaseUrl = _configuration["Confluence:BaseUrl"].Replace("/wiki/api/v2", "").Replace("/api/v2", "");
+                        webUrl = $"{confluenceBaseUrl}{webUrl}";
+                    }
+                }
+
+                _logger.Information("Retrieved page URL for {PageId}: {PageUrl}", pageId, webUrl);
+                return webUrl;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to get page URL for page {PageId}", pageId);
+
+                // Return a fallback URL if we can't get the real one
+                var confluenceBaseUrl = _configuration["Confluence:BaseUrl"].Replace("/wiki/api/v2", "").Replace("/api/v2", "");
+                var fallbackUrl = $"{confluenceBaseUrl}/wiki/pages/viewpage.action?pageId={pageId}";
+
+                _logger.Warning("Using fallback URL for page {PageId}: {FallbackUrl}", pageId, fallbackUrl);
+                return fallbackUrl;
+            }
+        }
+        #endregion
 
         #region Helper Method Section
 
         #region ExtractCustomerNameFromTitle
         private string ExtractCustomerNameFromTitle(string pageTitle)
         {
-            // Simple extraction - adjust based on your naming convention
-            // e.g., "Acme Corp - Transition Tracker" -> "Acme Corp"
-            var parts = pageTitle.Split(" - ");
-            return parts.Length > 0 ? parts[0].Trim() : pageTitle;
+            // Use the entire page title as the customer name
+            return pageTitle.Trim();
         }
         #endregion
 
@@ -1575,6 +1768,27 @@ namespace ConfluenceSyncService.Services.Clients
         }
 
         #endregion
+
+        // Helper method to detect placeholder text
+        private bool IsPlaceholderText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return false;
+
+            var lowerText = text.ToLowerInvariant();
+
+            return lowerText.Contains("select correct color") ||
+                   lowerText.Contains("⚠️") ||
+                   text == "YYYY-MM-DD" ||
+                   text == "[Enter notes here]" ||
+                   lowerText.Contains("select") && lowerText.Contains("color") ||
+                   lowerText.Contains("select status") ||
+                   lowerText.Contains("select impact") ||
+                   lowerText.Contains("select region") ||
+                   lowerText.Contains("select yes/no") ||
+                   lowerText.Contains("please select") ||
+                   text.Trim() == ""; // Empty text is also placeholder
+        }
 
 
 

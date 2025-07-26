@@ -51,17 +51,8 @@
             if (!string.IsNullOrEmpty(SupportImpact))
                 fields[GetFieldName("SupportImpact")] = SupportImpact;
 
-            // FIX: Ensure SupportAccepted is always included
-            var supportAccepted = ParseBoolOrNull(SupportAccepted);
-            if (supportAccepted.HasValue)
-            {
-                fields[GetFieldName("SupportAccepted")] = supportAccepted.Value;
-            }
-            else
-            {
-                // Include with null/default value if not parseable
-                fields[GetFieldName("SupportAccepted")] = false; // or null depending on SharePoint field requirements
-            }
+            if (!string.IsNullOrEmpty(SupportAccepted))
+                fields[GetFieldName("SupportAccepted")] = SupportAccepted;
 
             if (!string.IsNullOrEmpty(Notes))
                 fields[GetFieldName("Notes")] = Notes;

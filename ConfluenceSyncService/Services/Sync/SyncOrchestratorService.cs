@@ -186,12 +186,55 @@ namespace ConfluenceSyncService.Services.Sync
                 {
                     var pageId = spItem.Fields.TryGetValue("ConfluencePageId", out var pageIdObj) ? pageIdObj?.ToString() : null;
 
+                    // Handle missing Confluence pages - create them from template if SharePoint has Sync Tracker set to 'Yes'
                     if (string.IsNullOrEmpty(pageId))
                     {
-                        _logger.Warning("SharePoint item {ItemId} has no ConfluencePageId, skipping", spItem.Id);
-                        continue;
+                        // CHECK: Only create if SyncTracker is enabled
+                        if (!ShouldSyncBasedOnSyncTracker(spItem))
+                        {
+                            _logger.Debug("SharePoint item {ItemId} has no ConfluencePageId but SyncTracker is not 'Yes', skipping auto-creation", spItem.Id);
+                            continue;
+                        }
+
+                        var customerName = spItem.Fields.TryGetValue("Title", out var titleObj) ? titleObj?.ToString() : null;
+
+                        if (!string.IsNullOrEmpty(customerName))
+                        {
+                            _logger.Information("SharePoint item {ItemId} has no ConfluencePageId and SyncTracker='Yes'. Creating new Confluence page for customer: {CustomerName}",
+                                spItem.Id, customerName);
+
+                            try
+                            {
+                                // Create new page from template
+                                var newPageId = await _confluenceClient.CreateCustomerPageFromTemplateAsync(customerName, cancellationToken);
+
+                                // Update SharePoint with the new page info
+                                await UpdateSharePointWithNewPageInfo(spItem, newPageId, siteId, transitionTrackerList.DisplayName);
+
+                                // Create sync state for new page
+                                var newSyncState = await GetOrCreateSyncState(newPageId, customerName);
+
+                                _logger.Information("Successfully created Confluence page {PageId} for customer {CustomerName} and updated SharePoint item {ItemId}",
+                                    newPageId, customerName, spItem.Id);
+
+                                // Continue to next item - let next sync cycle handle the data sync
+                                continue;
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.Error(ex, "Failed to create Confluence page for customer {CustomerName} from SharePoint item {ItemId}",
+                                    customerName, spItem.Id);
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            _logger.Warning("SharePoint item {ItemId} has no ConfluencePageId and no Title (customer name), skipping", spItem.Id);
+                            continue;
+                        }
                     }
 
+                    // EXISTING: Handle items that already have Confluence pages
                     var syncState = await GetSyncStateByPageId(pageId);
                     if (syncState == null)
                     {
@@ -213,13 +256,46 @@ namespace ConfluenceSyncService.Services.Sync
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, "Failed to sync SharePoint item {ItemId} to Confluence", spItem.Id);
+                    _logger.Error(ex, "Failed to process SharePoint item {ItemId}", spItem.Id);
                     // Continue with other items
                 }
             }
         }
 
         #region Helper Methods
+
+        private bool ShouldSyncBasedOnSyncTracker(SharePointListItem spItem)
+        {
+            if (spItem.Fields.TryGetValue("SyncTracker", out var syncTrackerValue))
+            {
+                // Handle different possible values
+                var syncTracker = syncTrackerValue?.ToString()?.ToLowerInvariant();
+
+                return syncTracker switch
+                {
+                    "true" => true,
+                    "yes" => true,
+                    "1" => true,
+                    _ => false  // Default to false for null, empty, "false", "no", "0", etc.
+                };
+            }
+
+            // If SyncTracker field doesn't exist, default to false (don't sync)
+            return false;
+        }
+
+        private bool ShouldSyncBasedOnConfluenceSyncTracker(ConfluenceTableRow confluenceRow)
+        {
+            var syncTracker = confluenceRow.SyncTracker?.ToLowerInvariant();
+
+            return syncTracker switch
+            {
+                "yes" => true,
+                "true" => true,
+                "1" => true,
+                _ => false
+            };
+        }
 
         private bool PageHasTransitionTable(ConfluencePage page)
         {
@@ -297,6 +373,13 @@ namespace ConfluenceSyncService.Services.Sync
             _logger.Debug("  - Confluence LastModified: {ConfluenceModified}", confluenceRow.LastModifiedUtc);
             _logger.Debug("  - Sync State LastConfluenceModified: {SyncStateModified}", syncState.LastConfluenceModifiedUtc);
 
+            // Check if Confluence Sync Tracker allows sync
+            if (!ShouldSyncBasedOnConfluenceSyncTracker(confluenceRow))
+            {
+                _logger.Debug("Skipping Confluence page {PageId} - Sync Tracker is not 'Yes'", confluenceRow.PageId);
+                return false;
+            }
+
             // Sync if:
             // 1. Never synced before
             if (syncState.LastSyncedUtc == null || string.IsNullOrEmpty(syncState.SharePointItemId))
@@ -319,12 +402,33 @@ namespace ConfluenceSyncService.Services.Sync
 
         private async Task<bool> ShouldSyncToConfluence(SharePointListItem spItem, TableSyncState syncState)
         {
+            // Check SyncTracker field first
+            if (!ShouldSyncBasedOnSyncTracker(spItem))
+            {
+                _logger.Debug("Skipping SharePoint item {ItemId} - SyncTracker is not 'Yes'", spItem.Id);
+                return false;
+            }
+
+            // Add debug logging like the other direction
+            _logger.Debug("Evaluating sync need for SharePoint item {ItemId}:", spItem.Id);
+            _logger.Debug("  - LastSyncedUtc: {LastSynced}", syncState.LastSyncedUtc);
+            _logger.Debug("  - SharePoint LastModified: {SharePointModified}", spItem.LastModifiedUtc);
+            _logger.Debug("  - Sync State LastSharePointModified: {SyncStateModified}", syncState.LastSharePointModifiedUtc);
+
             if (syncState.LastSyncedUtc == null)
+            {
+                _logger.Information("SharePoint item {ItemId} needs sync: Never synced before", spItem.Id);
                 return true;
+            }
 
             if (spItem.LastModifiedUtc > syncState.LastSharePointModifiedUtc)
+            {
+                _logger.Information("SharePoint item {ItemId} needs sync: SharePoint modified since last sync ({SharePointTime} > {SyncTime})",
+                    spItem.Id, spItem.LastModifiedUtc, syncState.LastSharePointModifiedUtc);
                 return true;
+            }
 
+            _logger.Debug("SharePoint item {ItemId} does not need Confluence sync", spItem.Id);
             return false;
         }
 
@@ -500,7 +604,7 @@ namespace ConfluenceSyncService.Services.Sync
                 tableData["Support Impact"] = supportImpact?.ToString() ?? "";
 
             if (spItem.Fields.TryGetValue("field_8", out var supportAccepted))
-                tableData["Support Accepted"] = FormatBooleanForConfluence(supportAccepted);
+                tableData["Support Accepted"] = supportAccepted?.ToString() ?? "";
 
             if (spItem.Fields.TryGetValue("field_9", out var notes))
                 tableData["Notes"] = notes?.ToString() ?? "";
@@ -522,9 +626,60 @@ namespace ConfluenceSyncService.Services.Sync
         private string FormatBooleanForConfluence(object boolValue)
         {
             if (boolValue == null) return "";
-            if (bool.TryParse(boolValue.ToString(), out var boolVal))
-                return boolVal ? "Yes" : "No";
-            return "";
+
+            var stringValue = boolValue.ToString()?.ToLowerInvariant();
+
+            return stringValue switch
+            {
+                "true" => "Yes",
+                "false" => "No",
+                "yes" => "Yes",
+                "no" => "No",
+                "pending" => "Pending",
+                _ => boolValue.ToString() // Return original if not recognized
+            };
+        }
+
+        // Helper method to update SharePoint with new Confluence page info. Populates the SharePoint List field 'Customer Wiki'
+        private async Task UpdateSharePointWithNewPageInfo(SharePointListItem spItem, string pageId, string siteId, string listName)
+        {
+            try
+            {
+                // Get the page URL
+                var pageUrl = await _confluenceClient.GetPageUrlAsync(pageId);
+
+                var updateFields = new Dictionary<string, object>
+                {
+                    ["ConfluencePageId"] = int.Parse(pageId),
+                    ["field_10"] = pageUrl  // CustomerWiki field
+                };
+
+                await _sharePointClient.UpdateListItemAsync(siteId, listName, spItem.Id, updateFields);
+
+                _logger.Information("Updated SharePoint item {ItemId} with Confluence page {PageId} and URL {PageUrl}",
+                    spItem.Id, pageId, pageUrl);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to update SharePoint item {ItemId} with new Confluence page info", spItem.Id);
+                throw;
+            }
+        }
+
+        // Helper method to get SharePoint field name from configuration
+        private string GetSharePointFieldName(string logicalFieldName, string listType)
+        {
+            var fieldMappings = _configuration.GetSection($"SharePointFieldMappings:{listType}");
+            var sharePointFieldName = fieldMappings[logicalFieldName];
+
+            if (string.IsNullOrEmpty(sharePointFieldName))
+            {
+                _logger.Warning("No SharePoint field mapping found for {LogicalFieldName} in {ListType}, using logical name",
+                    logicalFieldName, listType);
+                return logicalFieldName;
+            }
+
+            return sharePointFieldName;
         }
 
         #endregion
