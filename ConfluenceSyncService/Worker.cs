@@ -1,4 +1,4 @@
-using ConfluenceSyncService.ConfluenceAPI;
+
 using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
@@ -33,7 +33,6 @@ namespace ConfluenceSyncService
         private readonly IServiceScopeFactory _serviceScopeFactory;
         private readonly StartupLoaderService _startupLoaderService;
         private readonly IConfiguration _configuration;
-        private readonly ConfluenceTokenManager _confluenceTokenManager;
         private readonly ConfluenceClient _confluenceClient;
         private readonly ISyncOrchestratorService _syncOrchestratorService;
         private readonly SharePointClient _sharePointClient;
@@ -41,7 +40,7 @@ namespace ConfluenceSyncService
 
 
         public Worker(ConfidentialClientApp confidentialClientApp, IConfiguration configuration, ILogger<Worker> logger, IServiceScopeFactory serviceScopeFactory,
-            StartupLoaderService startupLoaderService, DbContextOptions<ApplicationDbContext> dbOptions, ConfluenceTokenManager confluenceTokenManager,
+            StartupLoaderService startupLoaderService, DbContextOptions<ApplicationDbContext> dbOptions,
             ConfluenceClient confluenceClient, ISyncOrchestratorService syncOrchestratorService, SharePointClient sharePointClient)
         {
             _confidentialClientApp = confidentialClientApp;
@@ -50,7 +49,6 @@ namespace ConfluenceSyncService
             _startupLoaderService = startupLoaderService ?? throw new ArgumentNullException(nameof(startupLoaderService));
             _dbOptions = dbOptions;
             _serviceScopeFactory = serviceScopeFactory ?? throw new ArgumentNullException(nameof(serviceScopeFactory));
-            _confluenceTokenManager = confluenceTokenManager ?? throw new ArgumentNullException(nameof(confluenceTokenManager));
             _confluenceClient = confluenceClient;
             _syncOrchestratorService = syncOrchestratorService ?? throw new ArgumentException(nameof(syncOrchestratorService));
             _sharePointClient = sharePointClient;
@@ -79,28 +77,6 @@ namespace ConfluenceSyncService
             // ################ Loading Configuration.
 
             await _startupLoaderService.LoadAllStartupDataAsync();
-
-
-            //   ###   Get Confluence Initial Access_token and Refresh_token ###
-            _logger.Information("Attempting to retrieve initial Confluence access token...");
-
-            try
-            {
-                var (accessToken, cloudId) = await _confluenceTokenManager.GetAccessTokenAsync("Default", cancellationToken);
-
-                _logger.Information("Successfully acquired Confluence access token.");
-                _logger.Debug("Access token (first 10 chars): {TokenPrefix}", accessToken.Substring(0, 10));
-                _logger.Debug("Associated Cloud ID: {CloudId}", cloudId);
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "\nCritical failure: Unable to acquire initial Confluence access token.\n" +
-                                  "Please verify that the Client ID, Client Secret, and Refresh Token are correct and not expired.\n" +
-                                  "Confluence integration will not function. Halting application startup.");
-
-                // Rethrow to abort app start and signal failure to the host
-                throw;
-            }
 
             ////Validation: Get the SharePoint List actual Field Values
             //try
@@ -297,12 +273,11 @@ namespace ConfluenceSyncService
                 try
                 {
                     bool msGraphTokenValid = Authenticate.GetExpiresOn() > DateTime.UtcNow;
-                    bool confluenceTokenValid = _confluenceTokenManager.ExpiresAt > DateTimeOffset.UtcNow.AddMinutes(1);
 
-                    if (msGraphTokenValid && confluenceTokenValid)
+                    if (msGraphTokenValid)
                     {
                         // Just to gove some indication on the console that the loop is still running
-                        _logger.Information("Both MS Graph and Confluence tokens are valid at: {time}", DateTimeOffset.Now);
+                        _logger.Debug("MS Graph tokens valid at: {time}", DateTimeOffset.Now);
 
                         #region Plugin Loader Place Holder
                         #endregion
@@ -329,7 +304,7 @@ namespace ConfluenceSyncService
                     }
                     else
                     {
-                        _logger.Information("Token refresh needed: MSGraph Valid = {MS}, Confluence Valid = {CF}", msGraphTokenValid, confluenceTokenValid);
+                        _logger.Information("Token refresh needed: MSGraph Valid = {MS}", msGraphTokenValid);
 
                         if (!msGraphTokenValid)
                         {
@@ -338,12 +313,6 @@ namespace ConfluenceSyncService
                             _logger.Debug("Acquired new MS Graph token.");
                         }
 
-                        if (!confluenceTokenValid)
-                        {
-                            _logger.Information("Refreshing Confluence token...");
-                            var (accessToken, cloudId) = await _confluenceTokenManager.GetAccessTokenAsync("Default", cancellationToken);
-                            _logger.Debug("Acquired new Confluence token. First 10 chars: {Token}", accessToken.Substring(0, 10));
-                        }
 
                         await Task.Delay(1000, cancellationToken); // Short delay before next loop
                     }

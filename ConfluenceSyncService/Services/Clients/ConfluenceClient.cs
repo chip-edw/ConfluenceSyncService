@@ -1,4 +1,4 @@
-﻿using ConfluenceSyncService.ConfluenceAPI;
+﻿using ConfluenceSyncService.Auth;
 using ConfluenceSyncService.Dtos;
 using ConfluenceSyncService.Models;
 using Microsoft.Kiota.Abstractions.Extensions;
@@ -14,17 +14,14 @@ namespace ConfluenceSyncService.Services.Clients
     {
         private readonly HttpClient _httpClient;
         private readonly Serilog.ILogger _logger;
-        private readonly ConfluenceTokenManager _tokenManager;
-        private readonly string _cloudId;
         private readonly IConfiguration _configuration;
+        private readonly IConfluenceAuthClient _authClient;
         private readonly ConfluenceColorMappings _colorMappings;
 
-        public ConfluenceClient(HttpClient httpClient, ConfluenceTokenManager tokenManager, IConfiguration configuration)
+        public ConfluenceClient(HttpClient httpClient, IConfiguration configuration)
         {
             _httpClient = httpClient;
-            _tokenManager = tokenManager;
             _logger = Log.ForContext<ConfluenceClient>();
-            _cloudId = _tokenManager.CloudId;
             _configuration = configuration;
 
             // Bind the color mappings from configuration
@@ -199,86 +196,7 @@ namespace ConfluenceSyncService.Services.Clients
 
             return newPageId;
         }
-        #endregion
-
-        #region GetRecentlyModifiedItemsAsync
-        public async Task<List<ConfluenceRow>> GetRecentlyModifiedItemsAsync(string databaseId, DateTime sinceUtc)
-        {
-            var results = new List<ConfluenceRow>();
-            var sinceIso = sinceUtc.ToString("o");
-
-            var url = $"https://api.atlassian.com/ex/confluence/{_cloudId}/wiki/graphql";
-
-            var query = new
-            {
-                query = @"
-                    query GetModifiedRows($databaseId: ID!, $since: DateTime!) {
-                        database(id: $databaseId) {
-                            rows {
-                                nodes {
-                                    id
-                                    lastModifiedTime
-                                    fields {
-                                        name
-                                        value
-                                    }
-                                }
-                            }
-                        }
-                    }",
-                variables = new
-                {
-                    databaseId = databaseId,
-                    since = sinceIso
-                }
-            };
-
-            var (accessToken, _) = await _tokenManager.GetAccessTokenAsync();
-
-            var request = new HttpRequestMessage(HttpMethod.Post, url);
-
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            request.Content = new StringContent(JsonConvert.SerializeObject(query), Encoding.UTF8, "application/json");
-
-            var response = await _httpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-
-            var content = await response.Content.ReadAsStringAsync();
-            var json = JObject.Parse(content);
-            var nodes = json["data"]?["database"]?["rows"]?["nodes"];
-
-            if (nodes != null)
-            {
-                foreach (var node in nodes)
-                {
-                    var rowId = node["id"]?.ToString() ?? "";
-                    var modifiedStr = node["lastModifiedTime"]?.ToString();
-                    var modified = DateTime.TryParse(modifiedStr, out var dt) ? dt : DateTime.UtcNow;
-
-                    var fields = new Dictionary<string, object>();
-                    foreach (var field in node["fields"] ?? new JArray())
-                    {
-                        var name = field["name"]?.ToString();
-                        var value = field["value"];
-                        if (!string.IsNullOrWhiteSpace(name))
-                            fields[name] = value?.ToString();
-                    }
-
-                    results.Add(new ConfluenceRow
-                    {
-                        Id = rowId,
-                        ExternalId = fields.TryGetValue("ExternalId", out var extId) ? extId?.ToString() ?? "" : "",
-                        Title = fields.TryGetValue("Title", out var title) ? title?.ToString() ?? "" : "",
-                        LastModifiedUtc = modified,
-                        Fields = fields
-                    });
-                }
-            }
-
-            _logger.Information("Loaded {Count} recently modified Confluence items since {Since}", results.Count, sinceIso);
-            return results;
-        }
-        #endregion
+        #endregion      
 
         #region GetPageWithContentAsync
         public async Task<ConfluencePage> GetPageWithContentAsync(string pageId, CancellationToken cancellationToken = default)
