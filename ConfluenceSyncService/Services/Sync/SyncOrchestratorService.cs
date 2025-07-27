@@ -648,10 +648,14 @@ namespace ConfluenceSyncService.Services.Sync
                 // Get the page URL
                 var pageUrl = await _confluenceClient.GetPageUrlAsync(pageId);
 
+                // Get the SharePoint field name for CustomerWiki from configuration
+                var customerWikiFieldName = GetSharePointFieldName("CustomerWiki", "TransitionTracker");
+                var confluencePageIdFieldName = GetSharePointFieldName("ConfluencePageId", "TransitionTracker");
+
                 var updateFields = new Dictionary<string, object>
                 {
-                    ["ConfluencePageId"] = int.Parse(pageId),
-                    ["field_10"] = pageUrl  // CustomerWiki field
+                    [confluencePageIdFieldName] = int.Parse(pageId),
+                    [customerWikiFieldName] = pageUrl
                 };
 
                 await _sharePointClient.UpdateListItemAsync(siteId, listName, spItem.Id, updateFields);
@@ -662,7 +666,7 @@ namespace ConfluenceSyncService.Services.Sync
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to update SharePoint item {ItemId} with new Confluence page info", spItem.Id);
-                throw;
+                throw; // Re-throw since this is critical for the sync to work
             }
         }
 
