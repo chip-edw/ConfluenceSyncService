@@ -1,4 +1,5 @@
 ﻿using ConfluenceSyncService.Auth;
+using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.Dtos;
 using ConfluenceSyncService.Models;
 using Microsoft.Kiota.Abstractions.Extensions;
@@ -17,16 +18,19 @@ namespace ConfluenceSyncService.Services.Clients
         private readonly IConfiguration _configuration;
         private readonly IConfluenceAuthClient _authClient;
         private readonly ConfluenceColorMappings _colorMappings;
+        private readonly ISecretsProvider _secretsProvider;
 
-        public ConfluenceClient(HttpClient httpClient, IConfiguration configuration)
+        public ConfluenceClient(HttpClient httpClient, IConfiguration configuration, ISecretsProvider secretsProvider)
         {
             _httpClient = httpClient;
             _logger = Log.ForContext<ConfluenceClient>();
             _configuration = configuration;
+            _secretsProvider = secretsProvider;
 
             // Bind the color mappings from configuration
             _colorMappings = new ConfluenceColorMappings();
             _configuration.GetSection("ConfluenceColorMappings").Bind(_colorMappings);
+
         }
 
         #region GetAllDatabaseItemsAsync
@@ -70,8 +74,9 @@ namespace ConfluenceSyncService.Services.Clients
             //Console.WriteLine($"\n=== GETTING DATABASE WITH API TOKEN ===");
 
             // Get credentials from configuration
-            var username = _configuration["Confluence:Username"];
-            var apiToken = _configuration["Confluence:ApiToken"];
+            var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
+            var apiToken = await _secretsProvider.GetApiKeyAsync("ConfluenceApiToken");
+
             var cloudId = _configuration["Confluence:CloudId"];
 
             var databaseUrl = $"https://api.atlassian.com/ex/confluence/{cloudId}/rest/api/databases/{databaseId}?include-direct-children=true";
@@ -124,8 +129,9 @@ namespace ConfluenceSyncService.Services.Clients
             var request = new HttpRequestMessage(HttpMethod.Get, url);
 
             // Use API Token auth
-            var username = _configuration["Confluence:Username"];
-            var apiToken = _configuration["Confluence:ApiToken"];
+            var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
+            var apiToken = await _secretsProvider.GetApiKeyAsync("ConfluenceApiToken");
+
             var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
 
@@ -208,8 +214,8 @@ namespace ConfluenceSyncService.Services.Clients
             Console.WriteLine($"DEBUG: Full URL: {url}");
             var request = new HttpRequestMessage(HttpMethod.Get, url);
             // Use API Token auth
-            var username = _configuration["Confluence:Username"];
-            var apiToken = _configuration["Confluence:ApiToken"];
+            var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
+            var apiToken = await _secretsProvider.GetApiKeyAsync("ConfluenceApiToken");
             var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
             var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -352,8 +358,9 @@ namespace ConfluenceSyncService.Services.Clients
 
             var request = new HttpRequestMessage(HttpMethod.Put, url);
 
-            var username = _configuration["Confluence:Username"];
-            var apiToken = _configuration["Confluence:ApiToken"];
+            var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
+            var apiToken = await _secretsProvider.GetApiKeyAsync("ConfluenceApiToken");
+
             var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
 
@@ -634,8 +641,9 @@ namespace ConfluenceSyncService.Services.Clients
 
                     var request = new HttpRequestMessage(HttpMethod.Put, url);
 
-                    var username = _configuration["Confluence:Username"];
-                    var apiToken = _configuration["Confluence:ApiToken"];
+                    var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
+                    var apiToken = await _secretsProvider.GetApiKeyAsync("ConfluenceApiToken");
+
                     var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
                     request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
 
@@ -815,8 +823,9 @@ namespace ConfluenceSyncService.Services.Clients
 
                     var request = new HttpRequestMessage(HttpMethod.Put, url);
 
-                    var username = _configuration["Confluence:Username"];
-                    var apiToken = _configuration["Confluence:ApiToken"];
+                    var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
+                    var apiToken = await _secretsProvider.GetApiKeyAsync("ConfluenceApiToken");
+
                     var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
                     request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
 
@@ -1008,8 +1017,9 @@ namespace ConfluenceSyncService.Services.Clients
 
                 var request = new HttpRequestMessage(HttpMethod.Post, url);
 
-                var username = _configuration["Confluence:Username"];
-                var apiToken = _configuration["Confluence:ApiToken"];
+                var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
+                var apiToken = await _secretsProvider.GetApiKeyAsync("ConfluenceApiToken");
+
                 var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
 
@@ -1056,8 +1066,9 @@ namespace ConfluenceSyncService.Services.Clients
                 var request = new HttpRequestMessage(HttpMethod.Get, url);
 
                 // Use API Token auth
-                var username = _configuration["Confluence:Username"];
-                var apiToken = _configuration["Confluence:ApiToken"];
+                var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
+                var apiToken = await _secretsProvider.GetApiKeyAsync("ConfluenceApiToken");
+
                 var authValue = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{apiToken}"));
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authValue);
 

@@ -1,4 +1,5 @@
 using Asp.Versioning;
+using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.Extensions;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.Services;
@@ -86,9 +87,10 @@ namespace ConfluenceSyncService
 
                     Log.Information($"Beginning {nameof(StartupConfiguration)}\n");
 
-                    // Load settings using the scoped dbContext
-                    StartupConfiguration.LoadProtectedSettings(dbContext);
-                    Log.Information($"{nameof(StartupConfiguration.LoadProtectedSettings)}");
+                    // Load Secrets
+                    var secretsProvider = scope.ServiceProvider.GetRequiredService<ISecretsProvider>();
+                    await StartupConfiguration.LoadProtectedSettingsAsync(secretsProvider);
+
 
 
                     //Loads the necessary values for the MS Graph API. Includes values nessary to retrieve the Bearer Access Token

@@ -1,6 +1,5 @@
-﻿using ConfluenceSyncService.Models;
+﻿using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.Models.Configuration;
-using Microsoft.Data.Sqlite;
 using Serilog;
 using System.Runtime.InteropServices;
 
@@ -38,29 +37,30 @@ namespace ConfluenceSyncService
             protectedSettings.Add(key, value);
         }
 
-        public static bool LoadProtectedSettings(ApplicationDbContext dbContext)
+        public static async Task<bool> LoadProtectedSettingsAsync(ISecretsProvider secretsProvider)
         {
-            Log.Debug("Loading Protected Settings Method Fired from StartupConfiguration");
-            Log.Debug("Clearing Dictionary");
-
+            Log.Debug("Loading Protected Settings via ISecretsProvider");
             protectedSettings.Clear();
 
             try
             {
-                foreach (var setting in dbContext.ConfigStore)
+                var allKeys = await secretsProvider.GetAllApiKeysAsync();
+
+                foreach (var kvp in allKeys)
                 {
-                    protectedSettings[setting.ValueName] = setting.Value;
+                    protectedSettings[kvp.Key] = kvp.Value;
                 }
 
                 Log.Debug($"Protected Settings loaded. Count: {protectedSettings.Count}");
                 return true;
             }
-            catch (SqliteException ex)
+            catch (Exception ex)
             {
-                Log.Error("{0} Unable to read from database: {1}", nameof(LoadProtectedSettings), ex);
+                Log.Error(ex, "Failed to load protected settings via ISecretsProvider");
                 return false;
             }
         }
+
 
         public static void LoadMsGraphConfig()
         {

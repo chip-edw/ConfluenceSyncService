@@ -51,14 +51,14 @@ namespace ConfluenceSyncService.Extensions
             });
 
 
-            services.AddHttpClient<ConfluenceClient>((provider, httpClient) =>
-            {
-                // Optional: set default headers here if needed
-            }).AddTypedClient((httpClient, provider) =>
-            {
-                var configuration = provider.GetRequiredService<IConfiguration>();
-                return new ConfluenceClient(httpClient, configuration);
-            });
+            services.AddHttpClient<ConfluenceClient>()
+                .AddTypedClient((httpClient, provider) =>
+                {
+                    var configuration = provider.GetRequiredService<IConfiguration>();
+                    var secretsProvider = provider.GetRequiredService<ISecretsProvider>();
+                    return new ConfluenceClient(httpClient, configuration, secretsProvider);
+                });
+
 
 
 

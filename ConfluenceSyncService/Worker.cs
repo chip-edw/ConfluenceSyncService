@@ -229,8 +229,7 @@ namespace ConfluenceSyncService
             _logger.Information("Entering Main Worker Service ExecuteAsync Method\n");
 
             //Get the wait period at the bottom of each loop
-            var tD = StartupConfiguration.GetProtectedSetting("TimeDelay");
-            int timeDelay = Int32.Parse(tD) * 1000;
+            int timeDelay = _configuration.GetValue<int>("GeneralSettings:TimeDelay") * 1000;
 
             _logger.Information(">>> About to get MSGraph access token...");
 
