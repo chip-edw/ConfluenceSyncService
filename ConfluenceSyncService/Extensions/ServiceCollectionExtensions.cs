@@ -1,11 +1,10 @@
-﻿using ConfluenceSyncService.Auth;
-using ConfluenceSyncService.Common.Secrets;
-using ConfluenceSyncService.ConfluenceAPI;
+﻿using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
 using ConfluenceSyncService.Services;
 using ConfluenceSyncService.Services.Clients;
+using ConfluenceSyncService.Services.Secrets;
 using ConfluenceSyncService.Services.Sync;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Client;
@@ -19,8 +18,18 @@ namespace ConfluenceSyncService.Extensions
         {
             #region Core Configuration
             services.AddHttpClient();
-            services.AddScoped<ISecretsProvider, SqliteSecretsProvider>();
+
+            // Register individual secrets providers
+            services.AddScoped<SqliteSecretsProvider>();
+            services.AddScoped<AzureKeyVaultSecretsProvider>();
+
+            // Dynamically bind ISecretsProvider based on appsettings.json
+            services.AddScoped<ISecretsProvider>(provider =>
+                SecretsProviderFactory.Create(
+                    provider.GetRequiredService<IConfiguration>(),
+                    provider));
             #endregion
+
 
             #region MS Graph Integration
             services.AddSingleton<ConfidentialClientApp>();
@@ -29,8 +38,7 @@ namespace ConfluenceSyncService.Extensions
 
             #region Business Services and Internal API
             services.AddSingleton<StartupLoaderService>();
-            services.AddScoped<IConfluenceAuthClient, ConfluenceAuthClient>();
-            services.AddScoped<ConfluenceTokenManager>();
+            //services.AddScoped<IConfluenceAuthClient, ConfluenceAuthClient>();
             services.AddScoped<ISyncOrchestratorService, SyncOrchestratorService>();
 
             services.AddTransient<SharePointClient>(provider =>
@@ -43,20 +51,18 @@ namespace ConfluenceSyncService.Extensions
             });
 
 
+            services.AddHttpClient<ConfluenceClient>()
+                .AddTypedClient((httpClient, provider) =>
+                {
+                    var configuration = provider.GetRequiredService<IConfiguration>();
+                    var secretsProvider = provider.GetRequiredService<ISecretsProvider>();
+                    return new ConfluenceClient(httpClient, configuration, secretsProvider);
+                });
 
-            services.AddHttpClient<ConfluenceClient>((provider, httpClient) =>
-            {
-                // Optional: set any base address or default headers here
-            }).AddTypedClient((httpClient, provider) =>
-            {
-                var tokenManager = provider.GetRequiredService<ConfluenceTokenManager>();
-                var configuration = provider.GetRequiredService<IConfiguration>();
-                return new ConfluenceClient(httpClient, tokenManager, configuration);
-            });
+
 
 
             #endregion
-
 
             #region Entity Framework / DB
             //Register ApplicationDbContext needed so we can create new DbContext instances to use across threads
