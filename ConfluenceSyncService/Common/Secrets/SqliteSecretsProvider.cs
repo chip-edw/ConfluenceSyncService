@@ -1,91 +1,118 @@
 ﻿using ConfluenceSyncService.Models;
 using Microsoft.EntityFrameworkCore;
+using System.Collections.Concurrent;
 
 namespace ConfluenceSyncService.Common.Secrets
 {
-    public class SqliteSecretsProvider : ISecretsProvider
+    public class SqliteSecretsProvider : ISecretsProvider, IInitializableSecretsProvider
     {
-        private readonly ApplicationDbContext _dbContext;
+        private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<SqliteSecretsProvider> _logger;
+        private readonly ConcurrentDictionary<string, string> _secretCache = new(StringComparer.OrdinalIgnoreCase);
+        private bool _isInitialized = false;
+        private readonly object _initLock = new object();
 
-        public SqliteSecretsProvider(ApplicationDbContext dbContext, ILogger<SqliteSecretsProvider> logger)
+        public SqliteSecretsProvider(IServiceProvider serviceProvider, ILogger<SqliteSecretsProvider> logger)
         {
-            _dbContext = dbContext;
+            _serviceProvider = serviceProvider;
             _logger = logger;
         }
 
-        public async Task<string?> GetApiKeyAsync(string keyName)
+        public async Task InitializeAsync()
         {
-            _logger.LogInformation("Fetching API key from ConfigStore: {KeyName}", keyName);
+            if (_isInitialized) return;
 
-            var entry = await _dbContext.ConfigStore
-                .Where(c => c.ValueName == keyName)
-                .Select(c => c.Value)
-                .FirstOrDefaultAsync();
+            lock (_initLock)
+            {
+                if (_isInitialized) return;
 
-            if (entry == null)
-                _logger.LogWarning("No value found in ConfigStore for key: {KeyName}", keyName);
-            else
-                _logger.LogInformation("Value retrieved for key '{KeyName}': {Length} characters", keyName, entry.Length);
+                try
+                {
+                    // Create a scope to get the DbContext
+                    using var scope = _serviceProvider.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
-            return entry;
+                    // Load secrets synchronously within the lock
+                    var secrets = dbContext.ConfigStore.ToList();
+                    foreach (var entry in secrets)
+                    {
+                        _secretCache[entry.ValueName] = entry.Value;
+                    }
+
+                    _isInitialized = true;
+                    _logger.LogInformation("SqliteSecretsProvider initialized. {Count} secrets cached.", _secretCache.Count);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to preload secrets from ConfigStore.");
+                    throw;
+                }
+            }
         }
 
-
-        public async Task<Dictionary<string, string>> GetAllApiKeysAsync()
+        public Task<string?> GetApiKeyAsync(string keyName)
         {
-            return await _dbContext.ConfigStore
-                .ToDictionaryAsync(c => c.ValueName, c => c.Value);
+            if (!_isInitialized)
+            {
+                throw new InvalidOperationException("SqliteSecretsProvider must be initialized before use. Call InitializeAsync() first.");
+            }
+
+            if (_secretCache.TryGetValue(keyName, out var value))
+            {
+                _logger.LogDebug("Retrieved API key from memory cache: {KeyName}", keyName);
+                return Task.FromResult<string?>(value);
+            }
+
+            _logger.LogWarning("Secret '{KeyName}' not found in memory cache.", keyName);
+            return Task.FromResult<string?>(null);
+        }
+
+        public Task<Dictionary<string, string>> GetAllApiKeysAsync()
+        {
+            if (!_isInitialized)
+            {
+                throw new InvalidOperationException("SqliteSecretsProvider must be initialized before use. Call InitializeAsync() first.");
+            }
+
+            var copy = new Dictionary<string, string>(_secretCache, StringComparer.OrdinalIgnoreCase);
+            return Task.FromResult(copy);
         }
 
         public async Task SaveRefreshTokenAsync(string keyName, string newRefreshToken)
         {
-            var entry = await _dbContext.ConfigStore
-                .FirstOrDefaultAsync(c => c.ValueName == keyName);
+            // Create a scope for database operations
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
+            var entry = await dbContext.ConfigStore.FirstOrDefaultAsync(c => c.ValueName == keyName);
             if (entry != null)
             {
-                _logger.LogInformation("Found existing entry for '{KeyName}'. Current value length: {Length}", keyName, entry.Value?.Length ?? 0);
-                _logger.LogInformation("Before update - UpdatedAt: {UpdatedAt}", entry.UpdatedAt);
-
-                // Check if the value is actually different
                 if (entry.Value == newRefreshToken)
                 {
-                    _logger.LogWarning("New refresh token is identical to existing token - no update needed");
+                    _logger.LogWarning("Refresh token for '{KeyName}' is unchanged. Skipping update.", keyName);
                     return;
                 }
-
+                _logger.LogInformation("Updating refresh token for key '{KeyName}'.", keyName);
                 entry.Value = newRefreshToken;
-
-                // Check entity state before save
-                var entityEntry = _dbContext.Entry(entry);
-                _logger.LogInformation("Entity state before SaveChanges: {State}", entityEntry.State);
-                _logger.LogInformation("Entity has changes: {HasChanges}", entityEntry.Properties.Any(p => p.IsModified));
-
-                _logger.LogInformation("Updating existing refresh token for key '{KeyName}'", keyName);
             }
             else
             {
-                var newEntry = new ConfigStore
+                _logger.LogInformation("Creating new refresh token entry for key '{KeyName}'.", keyName);
+                entry = new ConfigStore
                 {
                     ValueName = keyName,
                     Value = newRefreshToken,
                     ValueType = "RefreshToken",
                     Description = $"Refresh token for {keyName}"
                 };
-                _dbContext.ConfigStore.Add(newEntry);
-                _logger.LogInformation("Creating new refresh token entry for key '{KeyName}'", keyName);
+                dbContext.ConfigStore.Add(entry);
             }
 
-            var changeCount = await _dbContext.SaveChangesAsync();
-            _logger.LogInformation("SaveChanges completed. Changes saved: {ChangeCount}", changeCount);
+            await dbContext.SaveChangesAsync();
 
-            // Check the value after save
-            var updatedEntry = await _dbContext.ConfigStore.FirstOrDefaultAsync(c => c.ValueName == keyName);
-            if (updatedEntry != null)
-            {
-                _logger.LogInformation("After save - UpdatedAt: {UpdatedAt}", updatedEntry.UpdatedAt);
-            }
+            // Update cache
+            _secretCache[keyName] = newRefreshToken;
+            _logger.LogInformation("Refresh token saved and memory cache updated for key '{KeyName}'.", keyName);
         }
     }
 }

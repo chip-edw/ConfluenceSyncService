@@ -1,7 +1,6 @@
 using Asp.Versioning;
 using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.Extensions;
-using ConfluenceSyncService.Models;
 using ConfluenceSyncService.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -30,15 +29,13 @@ namespace ConfluenceSyncService
 
             try
             {
-
                 // Create the WebApplication builder
                 var builder = WebApplication.CreateBuilder(args);
 
                 // Explicitly configure Serilog for the WebApplication builder
-                builder.Logging.ClearProviders(); // Clear default logging providers
-                builder.Logging.AddConsole();    // Add console logging back
-                builder.Host.UseSerilog();       // Use Serilog as the primary logging provider
-
+                builder.Logging.ClearProviders();
+                builder.Logging.AddConsole();
+                builder.Host.UseSerilog();
 
                 // Add the configuration to the builder
                 builder.Configuration.AddConfiguration(configuration);
@@ -49,7 +46,7 @@ namespace ConfluenceSyncService
                 // Add Controllers (required for MapControllers to work)
                 builder.Services.AddControllers();
 
-                //Went for the more robust versioning for the maintenance API
+                // API Versioning
                 builder.Services.AddApiVersioning(options =>
                 {
                     options.DefaultApiVersion = new ApiVersion(1, 0);
@@ -62,50 +59,65 @@ namespace ConfluenceSyncService
                     );
                 });
 
-                // Begin Register Services and Singletons - See Extensions.ServiceCollectionExtensions.cs 
-                builder.Services.AddAppServices();
+                // Determine secrets provider type
+                string secretsProviderType = configuration["SecretsProvider:Type"] ?? "Sqlite";
 
+                // Only do early loading for Azure Key Vault (to cache secrets)
+                if (secretsProviderType == "AzureKeyVault")
+                {
+                    // Create a temporary service provider for Azure Key Vault only
+                    var tempServices = new ServiceCollection();
+                    tempServices.AddSingleton<IConfiguration>(configuration);
+                    tempServices.AddAppSecrets(configuration);
+                    using var tempProvider = tempServices.BuildServiceProvider();
+                    var prebuildSecretsProvider = tempProvider.GetRequiredService<ISecretsProvider>();
+
+                    // Initialize the provider to cache secrets
+                    if (prebuildSecretsProvider is IInitializableSecretsProvider initializableProvider)
+                    {
+                        await initializableProvider.InitializeAsync();
+                    }
+
+                    await StartupConfiguration.LoadProtectedSettingsAsync(prebuildSecretsProvider);
+                }
+
+                // Register all app services (includes DbContext for SQLite case)
+                builder.Services.AddAppServices();
+                builder.Services.AddAppSecrets(configuration);
 
                 // Configure Kestrel for the internal maintenance API
                 int managementApiPort = configuration.GetValue<int>("ManagementApiPort");
                 builder.WebHost.ConfigureKestrel(options =>
                 {
-                    options.ListenAnyIP(managementApiPort); // Bind to the specified port
+                    options.ListenAnyIP(managementApiPort);
                 });
 
                 // Build and run the application
                 var app = builder.Build();
 
-                //Enable plugins to resolve scoped services
-                //PluginContracts.ServiceActivator.ServiceProvider = app.Services;
-
-
-                // Create a scope to access scoped services
+                // Handle secrets loading after app is built
                 using (var scope = app.Services.CreateScope())
                 {
-                    var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-
                     Log.Information($"Beginning {nameof(StartupConfiguration)}\n");
 
-                    // Load Secrets
                     var secretsProvider = scope.ServiceProvider.GetRequiredService<ISecretsProvider>();
+
+                    // Initialize SQLite secrets provider if needed
+                    if (secretsProvider is IInitializableSecretsProvider initializableProvider)
+                    {
+                        await initializableProvider.InitializeAsync();
+                    }
+
+                    // Load protected settings (this might be redundant for AzureKeyVault case, but safe)
                     await StartupConfiguration.LoadProtectedSettingsAsync(secretsProvider);
 
-
-
-                    //Loads the necessary values for the MS Graph API. Includes values nessary to retrieve the Bearer Access Token
-                    //from the Azure Authentication Service
-                    //Must be loaded before initializing the EmailManager as these settings are involved in the MSGraph authentication
+                    // Load MS Graph config
                     StartupConfiguration.LoadMsGraphConfig();
                     Log.Information($"{nameof(StartupConfiguration.LoadMsGraphConfig)}");
 
                     var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
                     var httpClientFactory = scope.ServiceProvider.GetRequiredService<IMsalHttpClientFactory>();
-
                 }
-
-                // Map the maintenance API endpoints
-                //ConfigureEndpoints(app, managementApiPort);
 
                 await app.RunAsync();
             }
@@ -118,11 +130,12 @@ namespace ConfluenceSyncService
                 Log.Information("Shutting down...");
                 Log.CloseAndFlush();
             }
-
         }
 
         private static void ConfigureServices(IServiceCollection services, IConfiguration configuration)
         {
+            services.AddLogging();
+
             services.AddSingleton(configuration);
             services.AddScoped<IWorkerService, Worker>();
             services.AddHostedService<ScopedWorkerHostedService>();

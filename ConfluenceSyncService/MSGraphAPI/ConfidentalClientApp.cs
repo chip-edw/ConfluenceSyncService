@@ -9,17 +9,26 @@ namespace ConfluenceSyncService.MSGraphAPI
     public class ConfidentialClientApp
     {
         private readonly IConfiguration _configuration;
-        private readonly IConfidentialClientApplication _app;
-        private readonly string[] _scopes;
+        private readonly IMsalHttpClientFactory _httpClientFactory;
+        private IConfidentialClientApplication _app;
+        private string[] _scopes;
         private readonly Serilog.ILogger _logger;
+        private bool _isInitialized = false;
 
         public ConfidentialClientApp(IConfiguration configuration, IMsalHttpClientFactory httpClientFactory)
         {
             _configuration = configuration;
-
+            _httpClientFactory = httpClientFactory;
             _logger = Log.ForContext<ConfidentialClientApp>();
+        }
 
-            // Get configuration values dynamically
+        public async Task InitializeAsync()
+        {
+            if (_isInitialized)
+                return;
+
+            _logger.Debug("Initializing ConfidentialClientApp...");
+
             string apiUrl = _configuration.GetValue<string>("ApiUrl");
             if (string.IsNullOrWhiteSpace(apiUrl))
             {
@@ -28,44 +37,40 @@ namespace ConfluenceSyncService.MSGraphAPI
 
             _scopes = new[] { $"{apiUrl}.default" }; // e.g., "https://graph.microsoft.com/.default"
 
-            //string clientId = _configuration.GetValue<string>("AuthenticationConfig:ClientId");
-            string clientId = StartupConfiguration.protectedSettings["ClientID"];
-            string clientSecret = StartupConfiguration.protectedSettings["ClientSecret"];
+            string clientId = StartupConfiguration.GetProtectedSetting("ClientID");
+            string clientSecret = StartupConfiguration.GetProtectedSetting("ClientSecret");
             string tenant = StartupConfiguration.GetProtectedSetting("Tenant");
-            // Instance is in the Appsettings.json file
-            string instance = configuration.GetValue<string>("Instance");
-            string authority = String.Format(CultureInfo.InvariantCulture, instance, tenant);
+            string instance = _configuration.GetValue<string>("Instance");
+            string authority = string.Format(CultureInfo.InvariantCulture, instance, tenant);
 
             bool enableMSALLogging = _configuration.GetValue<bool>("LoggingSettings:EnableMSALLogging");
+            var msalLogLevel = _configuration.GetValue<string>("LoggingSettings:MSALLogLevel")?.ToLower();
 
-            // Get the desired MSAL logging level from configuration
-            var msalLogLevel = _configuration.GetValue<string>("LoggingSettings:MSALLogLevel");
-
-            // Map the string value to Microsoft.Identity.Client.LogLevel. This is so Appsettings.Json controlls logging level
-            var parsedMsalLogLevel = msalLogLevel?.ToLower() switch
+            var parsedMsalLogLevel = msalLogLevel switch
             {
-                "verbose" => Microsoft.Identity.Client.LogLevel.Verbose,
-                "info" => Microsoft.Identity.Client.LogLevel.Info,
-                "warning" => Microsoft.Identity.Client.LogLevel.Warning,
-                "error" => Microsoft.Identity.Client.LogLevel.Error,
-                _ => Microsoft.Identity.Client.LogLevel.Warning // Default to Warning
+                "verbose" => IdentityLogLevel.Verbose,
+                "info" => IdentityLogLevel.Info,
+                "warning" => IdentityLogLevel.Warning,
+                "error" => IdentityLogLevel.Error,
+                _ => IdentityLogLevel.Warning
             };
 
             try
             {
-                // Build the confidential client application
                 _app = ConfidentialClientApplicationBuilder.Create(clientId)
                     .WithClientSecret(clientSecret)
                     .WithAuthority(new Uri(authority))
-                    .WithHttpClientFactory(new MsalHttpClientFactory(_configuration)) // Use the custom factory
+                    .WithHttpClientFactory(_httpClientFactory)
                     .WithLogging((IdentityLogLevel level, string message, bool pii) =>
-                     {
-                         if (enableMSALLogging)
-                         {
-                             Log.Debug($"[MSAL {level}] {message}");
-                         }
-                     }, parsedMsalLogLevel, enablePiiLogging: true)
+                    {
+                        if (enableMSALLogging)
+                        {
+                            Log.Debug($"[MSAL {level}] {message}");
+                        }
+                    }, parsedMsalLogLevel, enablePiiLogging: true)
                     .Build();
+
+                _isInitialized = true;
             }
             catch (Exception ex)
             {
@@ -79,22 +84,20 @@ namespace ConfluenceSyncService.MSGraphAPI
 
         public async Task<string> GetAccessToken()
         {
+            await InitializeAsync();
+
             try
             {
-                Log.Debug("Calling MSAL to AcquireTokenForClient...");
+                _logger.Debug("Calling MSAL to AcquireTokenForClient...");
 
                 AuthenticationResult result = await _app.AcquireTokenForClient(_scopes).ExecuteAsync();
 
-                Log.Debug("MSAL token acquired successfully.");
+                _logger.Debug("MSAL token acquired successfully.");
 
                 string accessToken = result.AccessToken;
 
-                // Write token to Authenticate class
                 Authenticate.SetAccessToken(accessToken);
-
-                // Get metadata and expiration time
-                DateTime expirationTime = result.ExpiresOn.DateTime;
-                Authenticate.SetTokenExpiration(expirationTime);
+                Authenticate.SetTokenExpiration(result.ExpiresOn.DateTime);
 
                 return accessToken;
             }

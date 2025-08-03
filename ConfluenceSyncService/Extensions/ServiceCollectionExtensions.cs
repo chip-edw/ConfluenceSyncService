@@ -13,23 +13,11 @@ namespace ConfluenceSyncService.Extensions
 {
     public static class ServiceCollectionExtensions
     {
-
         public static IServiceCollection AddAppServices(this IServiceCollection services)
         {
             #region Core Configuration
             services.AddHttpClient();
-
-            // Register individual secrets providers
-            services.AddScoped<SqliteSecretsProvider>();
-            services.AddScoped<AzureKeyVaultSecretsProvider>();
-
-            // Dynamically bind ISecretsProvider based on appsettings.json
-            services.AddScoped<ISecretsProvider>(provider =>
-                SecretsProviderFactory.Create(
-                    provider.GetRequiredService<IConfiguration>(),
-                    provider));
             #endregion
-
 
             #region MS Graph Integration
             services.AddSingleton<ConfidentialClientApp>();
@@ -38,7 +26,6 @@ namespace ConfluenceSyncService.Extensions
 
             #region Business Services and Internal API
             services.AddSingleton<StartupLoaderService>();
-            //services.AddScoped<IConfluenceAuthClient, ConfluenceAuthClient>();
             services.AddScoped<ISyncOrchestratorService, SyncOrchestratorService>();
 
             services.AddTransient<SharePointClient>(provider =>
@@ -50,7 +37,6 @@ namespace ConfluenceSyncService.Extensions
                 return new SharePointClient(httpClient, confidentialClient, configuration);
             });
 
-
             services.AddHttpClient<ConfluenceClient>()
                 .AddTypedClient((httpClient, provider) =>
                 {
@@ -58,14 +44,9 @@ namespace ConfluenceSyncService.Extensions
                     var secretsProvider = provider.GetRequiredService<ISecretsProvider>();
                     return new ConfluenceClient(httpClient, configuration, secretsProvider);
                 });
-
-
-
-
             #endregion
 
             #region Entity Framework / DB
-            //Register ApplicationDbContext needed so we can create new DbContext instances to use across threads
             services.AddDbContext<ApplicationDbContext>(options =>
                 options.UseSqlite("Data Source=ConfluenceSyncServiceDB.db"));
             #endregion
@@ -74,6 +55,31 @@ namespace ConfluenceSyncService.Extensions
             services.AddScoped<IWorkerService, Worker>();
             services.AddHostedService<ScopedWorkerHostedService>();
             #endregion
+
+            return services;
+        }
+
+        public static IServiceCollection AddAppSecrets(this IServiceCollection services, IConfiguration configuration)
+        {
+            string secretsProviderType = configuration["SecretsProvider:Type"] ?? "Sqlite";
+
+            switch (secretsProviderType)
+            {
+                case "AzureKeyVault":
+                    services.AddSingleton<ISecretsProvider>(provider =>
+                        new AzureKeyVaultSecretsProvider(configuration));
+                    break;
+
+                case "Sqlite":
+                    // Register as Singleton to match the lifetime requirements
+                    services.AddSingleton<SqliteSecretsProvider>();
+                    services.AddSingleton<ISecretsProvider>(provider =>
+                        provider.GetRequiredService<SqliteSecretsProvider>());
+                    break;
+
+                default:
+                    throw new InvalidOperationException($"Unsupported SecretsProvider type: {secretsProviderType}");
+            }
 
             return services;
         }

@@ -1,0 +1,191 @@
+[
+    {
+        "TaskCategory": "Support Transition Packet Delivered - T-4 weeks",
+        "Tasks": [
+            {
+                "TaskName": "Delivered",
+                "DefaultRole": "Project PM",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -28
+            },
+            {
+                "TaskName": "Support Functional Review",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -26
+            },
+            {
+                "TaskName": "Support Technical Review",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -24
+            },
+            {
+                "TaskName": "Start Support access discussions",
+                "DefaultRole": "Project PM",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -22
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Support Packet Responded To",
+        "Tasks": [
+            {
+                "TaskName": "Questions / Comments Delivered to PM",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -18
+            },
+            {
+                "TaskName": "Support attendees confirmed",
+                "DefaultRole": "Rachel/Chip",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -16
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Gates to meeting",
+        "Tasks": [
+            {
+                "TaskName": "* No P1 or P2 Tickets",
+                "DefaultRole": "Rachel/Chip",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -12
+            },
+            {
+                "TaskName": "*Customer readiness \n*Customer UAT Sign Off provided",
+                "DefaultRole": "Project PM",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -10
+            },
+            {
+                "TaskName": "* Access to environments provided",
+                "DefaultRole": "Project PM",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -8
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Transition Discussion Meeting",
+        "Tasks": [
+            {
+                "TaskName": "Meeting Scheduled",
+                "DefaultRole": "PM Name here",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -4
+            },
+            {
+                "TaskName": "Packet Questions / Comments Responded To",
+                "DefaultRole": "PM to lead",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": -2
+            },
+            {
+                "TaskName": "Discuss any remaining open tickets",
+                "DefaultRole": "PM to lead",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": 0
+            },
+            {
+                "TaskName": "Support team added to the Hyper care Teams chat",
+                "DefaultRole": "PM Name here",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": 2
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Transition Acceptance",
+        "Tasks": [
+            {
+                "TaskName": "* No P1 or P2 Tickets (duplicate in gates and Acceptance)",
+                "DefaultRole": "Rachel / Chip",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": 6
+            },
+            {
+                "TaskName": "*Customer readiness \n*Customer UAT Sign Off provided",
+                "DefaultRole": "Rachel / Chip",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": 8
+            },
+            {
+                "TaskName": "All customizations documented (FFD and TDD > 40 hours estimate)",
+                "DefaultRole": "Rachel / Chip",
+                "AnchorDateType": "GoLive",
+                "DueOffsetDays": 10
+            },
+            {
+                "TaskName": "* Validate Access to environments",
+                "DefaultRole": "Support Resources",
+                "AnchorDateType": "SupportGoLive",
+                "DueOffsetDays": -14
+            },
+            {
+                "TaskName": "If transition not accepted, PM to rebook transition discussion meeting once completed.",
+                "DefaultRole": "PM",
+                "AnchorDateType": "SupportGoLive",
+                "DueOffsetDays": -12
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Customer Instructions and Introductions",
+        "Tasks": [
+            {
+                "TaskName": "Meeting Scheduled",
+                "DefaultRole": "PM Name here",
+                "AnchorDateType": "SupportGoLive",
+                "DueOffsetDays": -8
+            },
+            {
+                "TaskName": "Meeting Held",
+                "DefaultRole": "PM Name here",
+                "AnchorDateType": "SupportGoLive",
+                "DueOffsetDays": -6
+            },
+            {
+                "TaskName": "Validate access to non prod",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "SupportGoLive",
+                "DueOffsetDays": -4
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Support Activities",
+        "Tasks": [
+            {
+                "TaskName": "Update AT Work Flow \nTickets to Support",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "SupportGoLive",
+                "DueOffsetDays": 0
+            },
+            {
+                "TaskName": "Update Support Distro",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "SupportGoLive",
+                "DueOffsetDays": 2
+            },
+            {
+                "TaskName": "Remove Project Auto Assignments",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "SupportGoLive",
+                "DueOffsetDays": 4
+            },
+            {
+                "TaskName": "Verify correct contract in AT is set as default.",
+                "DefaultRole": "Chip / Rachel",
+                "AnchorDateType": "SupportGoLive",
+                "DueOffsetDays": 6
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Insert new rows ABOVE this one",
+        "Tasks": []
+    }
+]

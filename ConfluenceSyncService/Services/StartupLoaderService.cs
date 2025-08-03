@@ -1,4 +1,5 @@
-﻿using ConfluenceSyncService.Models;
+﻿using ConfluenceSyncService.Common.Secrets;
+using ConfluenceSyncService.Models;
 using ConfluenceSyncService.Models.Configuration;
 using Serilog;
 
@@ -8,11 +9,16 @@ namespace ConfluenceSyncService.Services
     {
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly IConfiguration _configuration;
+        private readonly ISecretsProvider _secretsProvider;
 
-        public StartupLoaderService(IServiceScopeFactory scopeFactory, IConfiguration configuration)
+        public StartupLoaderService(
+            IServiceScopeFactory scopeFactory,
+            IConfiguration configuration,
+            ISecretsProvider secretsProvider)
         {
             _scopeFactory = scopeFactory;
             _configuration = configuration;
+            _secretsProvider = secretsProvider;
         }
 
         public async Task LoadAllStartupDataAsync()
@@ -26,6 +32,15 @@ namespace ConfluenceSyncService.Services
                 // Load SharePoint Site/List config from appsettings.json
                 StartupConfiguration.LoadSharePointConfiguration(_configuration);
             }
+
+            // Initialize in-memory secret cache if supported
+            if (_secretsProvider is IInitializableSecretsProvider initializable)
+            {
+                await initializable.InitializeAsync();
+            }
+
+
+
 
             Log.Information("Startup data loaded successfully.");
         }

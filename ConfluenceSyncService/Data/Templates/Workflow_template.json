@@ -1,0 +1,238 @@
+[
+    {
+        "TaskCategory": "Support Transition Packet Delivered - T-4 weeks",
+        "Tasks": [
+			{
+				"_comment": "Using Teams Group Chat for POC. Will use email if allowed",
+				"TaskName": "Gentle Chaser - PM Ensure Prepared", 
+				"DefaultRole": "Project PM",
+                "AnchorDateType": "GoLive",
+				"StartOffsetDays": -20,
+                "DurationBusinessDays": 4				
+			},	
+            {
+				"_comment": "PM or Support Resource needs to confirm delivery on Confluence Customer Wiki to advance Work Flow",
+                "TaskName": "Delivered",
+                "DefaultRole": "Project PM",
+                "AnchorDateType": "GoLive",
+				"StartOffsetDays": -15,
+                "DurationBusinessDays": 0
+            },
+            {
+				"_comment": "Support Functional to confirm review complete on Confluence Wiki",
+                "TaskName": "Support Functional Review",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "GoLive",
+				"StartOffsetDays": -14,
+                "DurationBusinessDays": 3
+            },
+            {
+				"_comment": "Support Functional to confirm review complete on Confluence Wiki",
+                "TaskName": "Support Technical Review",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "GoLive",
+                "StartOffsetDays": -14,
+                "DurationBusinessDays": 3
+            },
+            {
+				"_comment": "Doesn't matter how long Hypercare is. Start the discussions 2 weeks (10 Buss days) before Hyper-Care End Date",
+                "TaskName": "Start Support access discussions", 
+                "DefaultRole": "Project PM",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -10,
+                "DurationBusinessDays": 5
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Support Packet Responded To",
+        "Tasks": [
+            {	"_comment": "Lead Support Functional to confirm 'Responded to' and update status on Confluence Customer Wiki",
+                "TaskName": "Questions / Comments Delivered to PM",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "GoLive",
+				"StartOffsetDays": -11,
+                "DurationBusinessDays": 3
+            },
+            {
+                "TaskName": "Support attendees confirmed",
+                "DefaultRole": "Rachel/Chip",
+                "AnchorDateType": "GoLive",
+				"StartOffsetDays": -11,
+                "DurationBusinessDays": 3
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Gates to meeting",
+        "Tasks": [
+            {
+                "TaskName": "* No P1 or P2 Tickets",
+                "DefaultRole": "Rachel/Chip",
+                "AnchorDateType": "HypercareEnd",
+				"StartOffsetDays": -6,
+                "DurationBusinessDays": 1
+            },
+            {
+				
+                "TaskName": "*Customer readiness *Customer UAT Sign Off provided",
+                "DefaultRole": "Rachel/Chip",
+                "AnchorDateType": "HypercareEnd",
+				"StartOffsetDays": -6,
+                "DurationBusinessDays": 1
+            },
+			{
+				"_comment": "",
+                "TaskName": "All customizations documented (FFD and TDD > 40 hours estimate)",
+                "DefaultRole": "Rachel/Chip",
+                "AnchorDateType": "HypercareEnd",
+				"StartOffsetDays": -6,
+                "DurationBusinessDays": 1
+            },			
+            {
+				"_comment": "",
+                "TaskName": "* Access to environments provided",
+                "DefaultRole": "Project PM",
+                "AnchorDateType": "HypercareEnd",
+				"StartOffsetDays": -6,
+                "DurationBusinessDays": 1
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Transition Discussion Meeting",
+        "Tasks": [
+            {
+				"_comment": "Doesn't matter how long Hypercare is. Start the discussions 2 weeks (10 Bus dys) before Hyper-Care End Date",
+                "TaskName": "Meeting Scheduled",
+                "DefaultRole": "PM Name here",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "Packet Questions / Comments Responded To",
+                "DefaultRole": "PM to lead",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "Discuss any remaining open tickets",
+                "DefaultRole": "PM to lead",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "Support team added to the Hyper care Teams chat",
+                "DefaultRole": "PM Name here",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Transition Acceptance",
+        "Tasks": [
+            {
+                "TaskName": "* No P1 or P2 Tickets (duplicate in gates and Acceptance)",
+                "DefaultRole": "Rachel / Chip",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "*Customer readiness \n*Customer UAT Sign Off provided",
+                "DefaultRole": "Rachel / Chip",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "All customizations documented (FFD and TDD > 40 hours estimate)",
+                "DefaultRole": "Rachel / Chip",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "* Validate Access to environments",
+                "DefaultRole": "Support Resources",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "If transition not accepted, PM to rebook transition discussion meeting once completed.",
+                "DefaultRole": "PM",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Customer Instructions and Introductions",
+        "Tasks": [
+            {
+                "TaskName": "Meeting Scheduled",
+                "DefaultRole": "PM Name here",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "Meeting Held",
+                "DefaultRole": "PM Name here",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "Validate access to non prod",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": -5,
+                "DurationBusinessDays": 0
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Support Activities",
+        "Tasks": [
+            {
+                "TaskName": "Update AT Work Flow \nTickets to Support",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": ,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "Update Support Distro",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": 0,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "Remove Project Auto Assignments",
+                "DefaultRole": "Support Resource",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": 0,
+                "DurationBusinessDays": 0
+            },
+            {
+                "TaskName": "Verify correct contract in AT is set as default.",
+                "DefaultRole": "Chip / Rachel",
+                "AnchorDateType": "HypercareEnd",
+                "StartOffsetDays": 0,
+                "DurationBusinessDays": 0
+            }
+        ]
+    },
+    {
+        "TaskCategory": "Insert new rows ABOVE this one",
+        "Tasks": []
+    }
+]
