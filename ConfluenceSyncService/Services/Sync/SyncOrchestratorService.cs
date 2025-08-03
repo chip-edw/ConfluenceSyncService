@@ -29,10 +29,11 @@ namespace ConfluenceSyncService.Services.Sync
 
         public async Task RunSyncAsync(CancellationToken cancellationToken)
         {
-            _logger.Information("=== STARTING TABLE SYNC WORKFLOW ===");
+
 
             try
             {
+                _logger.Information("=== STARTING TABLE SYNC WORKFLOW ===");
                 // Step 1: Token management is handled in Worker, so we start with sync
 
                 // Step 2: Sync all Confluence Status Text Updates
@@ -66,7 +67,7 @@ namespace ConfluenceSyncService.Services.Sync
 
                 try
                 {
-                    _logger.Information("Processing page: {PageId} - {CustomerName}", page.Id, page.CustomerName);
+                    _logger.Debug("Processing page: {PageId} - {CustomerName}", page.Id, page.CustomerName);
 
                     // Check if page has transition tracker table
                     var fullPage = await _confluenceClient.GetPageWithContentAsync(page.Id, cancellationToken);
@@ -80,13 +81,13 @@ namespace ConfluenceSyncService.Services.Sync
 
                     // Update status text based on colors
                     var updateSuccess = await _confluenceClient.UpdateStatusTextBasedOnColorAsync(page.Id, cancellationToken);
-                    _logger.Information("Status text update for page {PageId}: {Success}", page.Id, updateSuccess);
+                    _logger.Debug("Status text update for page {PageId}: {Success}", page.Id, updateSuccess);
 
                     if (updateSuccess)
                     {
                         // Parse the updated table data
                         var tableData = await _confluenceClient.ParseTransitionTrackerTableAsync(page.Id, cancellationToken);
-                        _logger.Information("Parsed {Count} fields from page {PageId}", tableData.Count, page.Id);
+                        _logger.Debug("Parsed {Count} fields from page {PageId}", tableData.Count, page.Id);
 
                         foreach (var kvp in tableData)
                         {
@@ -137,7 +138,7 @@ namespace ConfluenceSyncService.Services.Sync
                     var confluenceTableRow = MapToConfluenceTableRow(tableData, fullPage);
 
                     //Temporary Test Parsing and logging.
-                    confluenceTableRow.TestParsing();
+                    //confluenceTableRow.TestParsing();
 
                     // Check if SharePoint item exists
                     var syncState = await GetOrCreateSyncState(page.Id, confluenceTableRow.CustomerName);

@@ -308,15 +308,15 @@ namespace ConfluenceSyncService.Services.Clients
             // Ensure we're working with UTC and format properly for OData
             var utcSince = sinceUtc.Kind == DateTimeKind.Utc ? sinceUtc : sinceUtc.ToUniversalTime();
 
-            Console.WriteLine($"=== CONFIGURATION DEBUG ===");
-            Console.WriteLine($"MaxFallbackItems from config: {_configuration.GetValue<int>("SharePoint:MaxFallbackItems", -1)}");
-            Console.WriteLine($"EnableFallbackFiltering from config: {_configuration.GetValue<bool>("SharePoint:EnableFallbackFiltering", false)}");
-            Console.WriteLine($"SharePoint section exists: {_configuration.GetSection("SharePoint").Exists()}");
+            _logger.Debug($"=== CONFIGURATION DEBUG ===");
+            _logger.Debug($"MaxFallbackItems from config: {_configuration.GetValue<int>("SharePoint:MaxFallbackItems", -1)}");
+            _logger.Debug($"EnableFallbackFiltering from config: {_configuration.GetValue<bool>("SharePoint:EnableFallbackFiltering", false)}");
+            _logger.Debug($"SharePoint section exists: {_configuration.GetSection("SharePoint").Exists()}");
 
             var sharepointSection = _configuration.GetSection("SharePoint");
-            Console.WriteLine($"Raw MaxFallbackItems value: '{sharepointSection["MaxFallbackItems"]}'");
-            Console.WriteLine($"Raw EnableFallbackFiltering value: '{sharepointSection["EnableFallbackFiltering"]}'");
-            Console.WriteLine($"=== END CONFIG DEBUG ===");
+            _logger.Debug($"Raw MaxFallbackItems value: '{sharepointSection["MaxFallbackItems"]}'");
+            _logger.Debug($"Raw EnableFallbackFiltering value: '{sharepointSection["EnableFallbackFiltering"]}'");
+            _logger.Debug($"=== END CONFIG DEBUG ===");
 
             try
             {
@@ -334,22 +334,22 @@ namespace ConfluenceSyncService.Services.Clients
 
                 var response = await _httpClient.SendAsync(request);
 
-                Console.WriteLine($"Response status: {response.StatusCode}");
+                _logger.Debug($"Response status: {response.StatusCode}");
 
                 if (response.IsSuccessStatusCode)
                 {
-                    Console.WriteLine($"SUCCESS !");
+                    _logger.Debug($"SUCCESS !");
                 }
                 else
                 {
                     var errorContent = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine($"Failed: {errorContent}");
+                    _logger.Error($"Failed: {errorContent}");
                 }
 
                 // If all attempts failed, use fallback
                 if (!response.IsSuccessStatusCode)
                 {
-                    Console.WriteLine("All date filter attempts failed, using fallback method...");
+                    _logger.Warning("All date filter attempts failed, using fallback method...");
                     return await GetRecentlyModifiedItemsWithoutFilterAsync(sitePath, listName, sinceUtc);
                 }
 
@@ -372,16 +372,16 @@ namespace ConfluenceSyncService.Services.Clients
                     });
                 }
 
-                Console.WriteLine($"Successfully retrieved {results.Count} items using date filter");
+                _logger.Debug($"Successfully retrieved {results.Count} items using date filter");
                 return results;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Exception occurred: {ex.Message}");
-                Console.WriteLine($"Exception type: {ex.GetType().Name}");
+                _logger.Error($"Exception occurred: {ex.Message}");
+                _logger.Debug($"Exception type: {ex.GetType().Name}");
                 if (ex.InnerException != null)
                 {
-                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                    _logger.Debug($"Inner exception: {ex.InnerException.Message}");
                 }
                 throw;
             }
@@ -395,27 +395,27 @@ namespace ConfluenceSyncService.Services.Clients
 
             // Get the limit from configuration with debugging
             var maxItems = _configuration.GetValue<int>("SharePoint:MaxFallbackItems", 100);
-            Console.WriteLine($"DEBUG: Configuration MaxFallbackItems = {maxItems}");
-            Console.WriteLine($"DEBUG: Configuration section exists = {_configuration.GetSection("SharePoint").Exists()}");
+            _logger.Debug($"DEBUG: Configuration MaxFallbackItems = {maxItems}");
+            _logger.Debug($"DEBUG: Configuration section exists = {_configuration.GetSection("SharePoint").Exists()}");
 
             // Debug individual config values
             var sharepointSection = _configuration.GetSection("SharePoint");
-            Console.WriteLine($"DEBUG: SharePoint:MaxFallbackItems = {sharepointSection["MaxFallbackItems"]}");
-            Console.WriteLine($"DEBUG: SharePoint:EnableFallbackFiltering = {sharepointSection["EnableFallbackFiltering"]}");
-            Console.WriteLine($"DEBUG: SharePoint:Hostname = {sharepointSection["Hostname"]}");
+            _logger.Debug($"DEBUG: SharePoint:MaxFallbackItems = {sharepointSection["MaxFallbackItems"]}");
+            _logger.Debug($"DEBUG: SharePoint:EnableFallbackFiltering = {sharepointSection["EnableFallbackFiltering"]}");
+            _logger.Debug($"DEBUG: SharePoint:Hostname = {sharepointSection["Hostname"]}");
 
             // Add safety limit and ordering to get most recent items first
             var url = $"https://graph.microsoft.com/v1.0/sites/{sitePath}/lists/{listId}/items" +
                       $"?$expand=fields&$orderby=lastModifiedDateTime desc&$top={maxItems}";
 
-            Console.WriteLine($"Fallback: Getting recent items with safety limit of {maxItems} items (from config)");
-            Console.WriteLine($"Fallback URL: {url}");
+            _logger.Debug($"Fallback: Getting recent items with safety limit of {maxItems} items (from config)");
+            _logger.Debug($"Fallback URL: {url}");
 
             var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
             var response = await _httpClient.SendAsync(request);
-            Console.WriteLine($"Fallback response status: {response.StatusCode}");
+            _logger.Debug($"Fallback response status: {response.StatusCode}");
 
 
 
@@ -423,7 +423,7 @@ namespace ConfluenceSyncService.Services.Clients
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"Fallback failed: {errorContent}");
+                _logger.Debug($"Fallback failed: {errorContent}");
                 throw new HttpRequestException($"Fallback method failed: {response.StatusCode} - {errorContent}");
             }
 
@@ -434,27 +434,27 @@ namespace ConfluenceSyncService.Services.Clients
 
             // In the fallback method, after getting the JSON response, add this:
             // Add this debugging section:
-            Console.WriteLine("\n=== FIELD STRUCTURE DEBUG ===");
+            _logger.Debug("\n=== FIELD STRUCTURE DEBUG ===");
             var firstItem = json["value"]?.FirstOrDefault();
             if (firstItem != null)
             {
-                Console.WriteLine("Raw item structure:");
-                Console.WriteLine(firstItem.ToString());
+                _logger.Debug("Raw item structure:");
+                _logger.Debug(firstItem.ToString());
 
                 var fields = firstItem["fields"];
                 if (fields != null)
                 {
-                    Console.WriteLine("\nAvailable fields:");
+                    _logger.Debug("\nAvailable fields:");
                     foreach (var field in fields.Children<JProperty>())
                     {
-                        Console.WriteLine($"Field: '{field.Name}' = '{field.Value}'");
+                        _logger.Debug($"Field: '{field.Name}' = '{field.Value}'");
                     }
                 }
             }
-            Console.WriteLine("=== END FIELD DEBUG ===\n");
+            _logger.Debug("=== END FIELD DEBUG ===\n");
 
             var totalItemsReturned = json["value"]?.Count() ?? 0;
-            Console.WriteLine($"Graph API returned {totalItemsReturned} items (requested max {maxItems})");
+            _logger.Debug($"Graph API returned {totalItemsReturned} items (requested max {maxItems})");
 
             var results = new List<SharePointListItemDto>();
             var totalProcessed = 0;
@@ -469,14 +469,14 @@ namespace ConfluenceSyncService.Services.Clients
                 // Only log first 5 items to avoid spam
                 if (totalProcessed <= 5)
                 {
-                    Console.WriteLine($"Processing item {totalProcessed}: ID={id}, Modified={modified}");
+                    _logger.Debug($"Processing item {totalProcessed}: ID={id}, Modified={modified}");
                 }
 
                 // Since items are ordered by lastModifiedDateTime desc, 
                 // we can break early when we hit the cutoff date
                 if (modified < sinceUtc)
                 {
-                    Console.WriteLine($"Reached items older than {sinceUtc}, stopping at item {totalProcessed}");
+                    _logger.Debug($"Reached items older than {sinceUtc}, stopping at item {totalProcessed}");
                     break;
                 }
 
@@ -491,7 +491,7 @@ namespace ConfluenceSyncService.Services.Clients
                 });
             }
 
-            Console.WriteLine($"Fallback method: Found {results.Count} items modified since {sinceUtc} (processed {totalProcessed} total items, max allowed: {maxItems}, API returned: {totalItemsReturned})");
+            _logger.Debug($"Fallback method: Found {results.Count} items modified since {sinceUtc} (processed {totalProcessed} total items, max allowed: {maxItems}, API returned: {totalItemsReturned})");
             return results;
         }
         private async Task<string> GetListIdByNameAsync(string sitePath, string listName)
@@ -501,38 +501,38 @@ namespace ConfluenceSyncService.Services.Clients
             // Check cache first
             if (_listIdCache.TryGetValue(cacheKey, out var cachedId))
             {
-                Console.WriteLine($"Using cached list ID for '{listName}': {cachedId}");
+                _logger.Debug($"Using cached list ID for '{listName}': {cachedId}");
                 return cachedId;
             }
 
-            Console.WriteLine($"Cache miss - fetching list ID for '{listName}'");
+            _logger.Debug($"Cache miss - fetching list ID for '{listName}'");
 
             var url = $"https://graph.microsoft.com/v1.0/sites/{sitePath}/lists";
 
-            Console.WriteLine($"Attempting to get lists from: {url}");
+            _logger.Debug($"Attempting to get lists from: {url}");
 
             var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
             var response = await _httpClient.SendAsync(request);
 
-            Console.WriteLine($"Lists API response status: {response.StatusCode}");
+            _logger.Debug($"Lists API response status: {response.StatusCode}");
 
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"Lists API error response: {errorContent}");
+                _logger.Warning($"Lists API error response: {errorContent}");
 
                 // Try alternative site path formats
                 if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
-                    Console.WriteLine($"Site not found with path '{sitePath}'. Trying alternative formats...");
+                    _logger.Warning($"Site not found with path '{sitePath}'. Trying alternative formats...");
 
                     // Try without the protocol prefix if it exists
                     if (sitePath.Contains(":/"))
                     {
                         var altSitePath = sitePath.Split(":/")[1];
-                        Console.WriteLine($"Trying alternative site path: '{altSitePath}'");
+                        _logger.Warning($"Trying alternative site path: '{altSitePath}'");
                         return await GetListIdByNameWithPath(altSitePath, listName);
                     }
 
@@ -540,7 +540,7 @@ namespace ConfluenceSyncService.Services.Clients
                     if (!sitePath.StartsWith("root"))
                     {
                         var rootSitePath = $"root/sites/{sitePath.Replace("/sites/", "")}";
-                        Console.WriteLine($"Trying root site path: '{rootSitePath}'");
+                        _logger.Warning($"Trying root site path: '{rootSitePath}'");
                         return await GetListIdByNameWithPath(rootSitePath, listName);
                     }
                 }
@@ -551,7 +551,7 @@ namespace ConfluenceSyncService.Services.Clients
             var content = await response.Content.ReadAsStringAsync();
             var json = JObject.Parse(content);
 
-            Console.WriteLine($"Found {json["value"]?.Count() ?? 0} lists in site");
+            _logger.Debug($"Found {json["value"]?.Count() ?? 0} lists in site");
 
             // Cache ALL lists from this site while we're here
             foreach (var list in json["value"] ?? Enumerable.Empty<JToken>())
@@ -559,13 +559,13 @@ namespace ConfluenceSyncService.Services.Clients
                 var displayName = list["displayName"]?.ToString();
                 var listId = list["id"]?.ToString();
 
-                Console.WriteLine($"Found list: '{displayName}' with ID: {listId}");
+                _logger.Debug($"Found list: '{displayName}' with ID: {listId}");
 
                 if (!string.IsNullOrEmpty(displayName) && !string.IsNullOrEmpty(listId))
                 {
                     var key = $"{sitePath}|{displayName}";
                     _listIdCache.TryAdd(key, listId);
-                    Console.WriteLine($"Cached list ID: '{displayName}' -> {listId}");
+                    _logger.Debug($"Cached list ID: '{displayName}' -> {listId}");
                 }
             }
 
@@ -592,7 +592,7 @@ namespace ConfluenceSyncService.Services.Clients
             }
 
             var url = $"https://graph.microsoft.com/v1.0/sites/{altSitePath}/lists";
-            Console.WriteLine($"Trying alternative URL: {url}");
+            _logger.Warning($"Trying alternative URL: {url}");
 
             var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());

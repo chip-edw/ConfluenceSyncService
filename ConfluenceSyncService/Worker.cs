@@ -70,8 +70,8 @@ namespace ConfluenceSyncService
             // ##########          Begin Application Startup and Prechecks          ##########
 
             _logger.Information("Preparing to start Confluence Sync Service \n " +
-                "Waiting 10 sec to ensure all Network Dependancies available. \n\n");
-            Thread.Sleep(10 * 1000);
+                "Waiting 5 sec to ensure all Network Dependancies available. \n\n");
+            Thread.Sleep(5 * 1000);
 
             //####################### WE INITIALIZE THE STARTUP CONFIGURATION HERE ##########################
             // ################ Loading Configuration.
@@ -213,7 +213,7 @@ namespace ConfluenceSyncService
 
             _logger.Information(" ____________________________________________");
             _logger.Information("|                                            |");
-            _logger.Information("|     Confluence Sync Service     |");
+            _logger.Information("|          Confluence Sync Service           |");
             _logger.Information("|                                            |");
             _logger.Information($"|        Application version: {assemblyVersion}        |");
             _logger.Information("|____________________________________________|");
@@ -267,7 +267,7 @@ namespace ConfluenceSyncService
 
             while (!cancellationToken.IsCancellationRequested && !cancelTokenIssued)
             {
-                _logger.Debug("Worker heartbeat at: {time}", DateTimeOffset.Now);
+                //_logger.Debug("Worker heartbeat at: {time}", DateTimeOffset.Now);
 
                 try
                 {
@@ -283,12 +283,12 @@ namespace ConfluenceSyncService
 
                         #region Invoke SyncOrchestratorService
 
-                        _logger.Information("=== STARTING TABLE SYNC CYCLE ===");
+                        _logger.Debug("=== STARTING TABLE SYNC CYCLE ===");
                         try
                         {
                             // Run sync here
                             await _syncOrchestratorService.RunSyncAsync(cancellationToken);
-                            _logger.Information("=== TABLE SYNC CYCLE COMPLETED ===");
+                            _logger.Debug("=== TABLE SYNC CYCLE COMPLETED ===");
                         }
                         catch (Exception ex)
                         {

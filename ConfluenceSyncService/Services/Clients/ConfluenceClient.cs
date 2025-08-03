@@ -36,7 +36,7 @@ namespace ConfluenceSyncService.Services.Clients
         #region GetAllDatabaseItemsAsync
         public async Task<List<ConfluenceRow>> GetAllDatabaseItemsAsync(string databaseId, CancellationToken cancellationToken = default)
         {
-            _logger.Information("Stub: Returning mock data for GetAllDatabaseItemsAsync()");
+            _logger.Debug("Stub: Returning mock data for GetAllDatabaseItemsAsync()");
             return new List<ConfluenceRow>
             {
                 new ConfluenceRow
@@ -55,23 +55,22 @@ namespace ConfluenceSyncService.Services.Clients
         }
         #endregion
 
-        #region CreateDatabaseItemAsync
-        public async Task<bool> CreateDatabaseItemAsync(ConfluenceRow row, string databaseId)
-        {
-            _logger.Information("Creating new item in Confluence database {DatabaseId} with title '{Title}'", databaseId, row.Title);
+        //#region CreateDatabaseItemAsync
+        //public async Task<bool> CreateDatabaseItemAsync(ConfluenceRow row, string databaseId)
+        //{
+        //    _logger.Information("Creating new item in Confluence database {DatabaseId} with title '{Title}'", databaseId, row.Title);
 
-            // TODO: Replace with real API call later
-            await Task.Delay(100); // simulate latency
+        //    // TODO: Replace with real API call later
+        //    await Task.Delay(100); // simulate latency
 
-            _logger.Information("Successfully mocked creation of database item with ExternalId {ExternalId}", row.ExternalId);
-            return true;
-        }
-        #endregion
+        //    _logger.Information("Successfully mocked creation of database item with ExternalId {ExternalId}", row.ExternalId);
+        //    return true;
+        //}
+        //#endregion
 
         #region GetDatabaseEntriesAsync
         public async Task<List<ConfluenceDatabaseEntryDto>> GetDatabaseEntriesAsync(string databaseId, CancellationToken cancellationToken = default)
         {
-            //Console.WriteLine($"\n=== GETTING DATABASE WITH API TOKEN ===");
 
             // Get credentials from configuration
             var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
@@ -81,9 +80,6 @@ namespace ConfluenceSyncService.Services.Clients
 
             var databaseUrl = $"https://api.atlassian.com/ex/confluence/{cloudId}/rest/api/databases/{databaseId}?include-direct-children=true";
 
-            //Console.WriteLine($"Database URL: {databaseUrl}");
-            //Console.WriteLine($"Username: {username}");
-            //Console.WriteLine($"Using API Token authentication");
 
             var request = new HttpRequestMessage(HttpMethod.Get, databaseUrl);
 
@@ -93,20 +89,17 @@ namespace ConfluenceSyncService.Services.Clients
 
             var response = await _httpClient.SendAsync(request, cancellationToken);
 
-            //Console.WriteLine($"Response: {response.StatusCode}");
 
             if (response.IsSuccessStatusCode)
             {
                 var content = await response.Content.ReadAsStringAsync(cancellationToken);
-                //Console.WriteLine($"SUCCESS with API Token!");
-                //Console.WriteLine($"Response sample: {content.Substring(0, Math.Min(500, content.Length))}...");
 
                 return new List<ConfluenceDatabaseEntryDto>();
             }
             else
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"API Token Error: {errorContent}");
+                _logger.Error($"API Token Error: {errorContent}");
                 throw new HttpRequestException($"Failed with API token: {response.StatusCode} - {errorContent}");
             }
         }
@@ -122,7 +115,7 @@ namespace ConfluenceSyncService.Services.Clients
                 throw new InvalidOperationException("CustomersParentPageId not configured in appsettings.json");
             }
 
-            _logger.Information("Getting customer pages under parent page {ParentPageId}", customersParentPageId);
+            _logger.Debug("Getting customer pages under parent page {ParentPageId}", customersParentPageId);
 
             var url = $"{_configuration["Confluence:BaseUrl"]}/pages/{customersParentPageId}/children?type=page";
 
@@ -171,10 +164,10 @@ namespace ConfluenceSyncService.Services.Clients
                 }
             }
 
-            _logger.Information("Successfully retrieved {Count} customer pages", customerPages.Count);
+            _logger.Debug("Successfully retrieved {Count} customer pages", customerPages.Count);
             return customerPages;
 
-            _logger.Information("Successfully retrieved customer pages");
+            _logger.Debug("Successfully retrieved customer pages");
             return new List<ConfluencePage>(); // Placeholder for now
         }
         #endregion
@@ -207,11 +200,11 @@ namespace ConfluenceSyncService.Services.Clients
         #region GetPageWithContentAsync
         public async Task<ConfluencePage> GetPageWithContentAsync(string pageId, CancellationToken cancellationToken = default)
         {
-            _logger.Information("Getting full content for page {PageId}", pageId);
+            _logger.Debug("Getting full content for page {PageId}", pageId);
             // Use v1 API which has better content expansion support
             var baseUrl = _configuration["Confluence:BaseUrl"].Replace("/api/v2", "");
             var url = $"{baseUrl}/rest/api/content/{pageId}?expand=body.atlas_doc_format,body.storage,version";
-            Console.WriteLine($"DEBUG: Full URL: {url}");
+            _logger.Debug($"DEBUG: Full URL: {url}");
             var request = new HttpRequestMessage(HttpMethod.Get, url);
             // Use API Token auth
             var username = await _secretsProvider.GetApiKeyAsync("ConfluenceUserName");
@@ -222,8 +215,8 @@ namespace ConfluenceSyncService.Services.Clients
             response.EnsureSuccessStatusCode();
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
             // DEBUG: Show raw response
-            //Console.WriteLine($"DEBUG: Raw response length: {content.Length}");
-            //Console.WriteLine($"DEBUG: Raw response sample: {content.Substring(0, Math.Min(500, content.Length))}");
+            _logger.Debug($"DEBUG: Raw response length: {content.Length}");
+            _logger.Debug($"DEBUG: Raw response sample: {content.Substring(0, Math.Min(500, content.Length))}");
             var json = JObject.Parse(content);
             var page = new ConfluencePage
             {
@@ -234,16 +227,16 @@ namespace ConfluenceSyncService.Services.Clients
                 HtmlContent = json["body"]?["storage"]?["value"]?.ToString(),
                 AdfContent = json["body"]?["atlas_doc_format"]?["value"]?.ToString()
             };
-            ////Console.WriteLine($"DEBUG: HtmlContent length: {page.HtmlContent?.Length ?? 0}");
-            //if (!string.IsNullOrEmpty(page.HtmlContent))
-            //{
-            //    Console.WriteLine($"DEBUG: HtmlContent sample: {page.HtmlContent.Substring(0, Math.Min(300, page.HtmlContent.Length))}");
-            //}
-            ////Console.WriteLine($"DEBUG: AdfContent length: {page.AdfContent?.Length ?? 0}");
-            //if (!string.IsNullOrEmpty(page.AdfContent))
-            //{
-            //    Console.WriteLine($"DEBUG: Full AdfContent: {page.AdfContent}");
-            //}
+            _logger.Debug($"DEBUG: HtmlContent length: {page.HtmlContent?.Length ?? 0}");
+            if (!string.IsNullOrEmpty(page.HtmlContent))
+            {
+                _logger.Debug($"DEBUG: HtmlContent sample: {page.HtmlContent.Substring(0, Math.Min(300, page.HtmlContent.Length))}");
+            }
+            _logger.Debug($"DEBUG: AdfContent length: {page.AdfContent?.Length ?? 0}");
+            if (!string.IsNullOrEmpty(page.AdfContent))
+            {
+                _logger.Debug($"DEBUG: Full AdfContent: {page.AdfContent}");
+            }
             // Parse timestamps
             if (DateTime.TryParse(json["created"]?.ToString(), out var createdAt))
                 page.CreatedAt = createdAt;
@@ -252,7 +245,7 @@ namespace ConfluenceSyncService.Services.Clients
             page.CustomerName = ExtractCustomerNameFromTitle(page.Title);
             // Check if page has a database - check both HTML and ADF
             page.HasDatabase = CheckForDatabase(page.HtmlContent) || CheckForDatabaseInAdf(page.AdfContent);
-            _logger.Information("Retrieved page content, HasDatabase: {HasDatabase}", page.HasDatabase);
+            _logger.Debug("Retrieved page content, HasDatabase: {HasDatabase}", page.HasDatabase);
             return page;
         }
         #endregion
@@ -386,7 +379,7 @@ namespace ConfluenceSyncService.Services.Clients
         #region ParseTransitionTrackerTableAsync
         public async Task<Dictionary<string, string>> ParseTransitionTrackerTableAsync(string pageId, CancellationToken cancellationToken = default)
         {
-            _logger.Information("Parsing Transition Tracker table from page {PageId}", pageId);
+            _logger.Debug("Parsing Transition Tracker table from page {PageId}", pageId);
 
             var page = await GetPageWithContentAsync(pageId, cancellationToken);
 
@@ -425,7 +418,7 @@ namespace ConfluenceSyncService.Services.Clients
                 _logger.Error(ex, "Failed to parse table data from page {PageId}", pageId);
             }
 
-            _logger.Information("Parsed {Count} fields from Transition Tracker table", result.Count);
+            _logger.Debug("Parsed {Count} fields from Transition Tracker table", result.Count);
             return result;
         }
 
@@ -581,7 +574,7 @@ namespace ConfluenceSyncService.Services.Clients
             // If no mapping found, return a "please correct" message
             if (string.IsNullOrEmpty(mapping))
             {
-                _logger.Warning("Invalid color '{Color}' found for field '{FieldName}'. Prompting user to correct.", color, fieldName);
+                _logger.Debug("Invalid color '{Color}' found for field '{FieldName}'. Prompting user to correct.", color, fieldName);
                 return "⚠️ Select correct color";
             }
 
@@ -592,7 +585,7 @@ namespace ConfluenceSyncService.Services.Clients
         #region UpdateStatusTextBasedOnColorAsync
         public async Task<bool> UpdateStatusTextBasedOnColorAsync(string pageId, CancellationToken cancellationToken = default)
         {
-            _logger.Information("Updating status text based on colors for page {PageId}", pageId);
+            _logger.Debug("Updating status text based on colors for page {PageId}", pageId);
 
             var page = await GetPageWithContentAsync(pageId, cancellationToken);
 
@@ -664,7 +657,7 @@ namespace ConfluenceSyncService.Services.Clients
                     }
                 }
 
-                _logger.Information("No status text updates needed for page {PageId}", pageId);
+                _logger.Debug("No status text updates needed for page {PageId}", pageId);
                 return true;
             }
             catch (Exception ex)
@@ -720,12 +713,12 @@ namespace ConfluenceSyncService.Services.Clients
                                     var currentText = node["attrs"]?["text"]?.ToString();
                                     var expectedText = MapColorToValue(currentColor, fieldName);
 
-                                    //Console.WriteLine($"DEBUG: {fieldName} - Current: {currentColor}/{currentText}, Expected: {expectedText}");
+                                    _logger.Debug($"DEBUG: {fieldName} - Current: {currentColor}/{currentText}, Expected: {expectedText}");
 
                                     // Check if this is an invalid color (returns warning message)
                                     if (expectedText == "⚠️ Please select correct color")
                                     {
-                                        //Console.WriteLine($"DEBUG: Invalid color detected for {fieldName}, resetting to grey");
+                                        _logger.Debug($"DEBUG: Invalid color detected for {fieldName}, resetting to grey");
                                         node["attrs"]["text"] = expectedText;
                                         node["attrs"]["color"] = "grey";
                                         return true;
@@ -733,7 +726,7 @@ namespace ConfluenceSyncService.Services.Clients
                                     // Normal update for valid colors
                                     else if (!string.IsNullOrEmpty(expectedText) && currentText != expectedText)
                                     {
-                                        //Console.WriteLine($"DEBUG: Updating {fieldName}: {currentText}→{expectedText}");
+                                        _logger.Debug($"DEBUG: Updating {fieldName}: {currentText}→{expectedText}");
                                         node["attrs"]["text"] = expectedText;
                                         // Keep the current color since it's valid
                                         return true;

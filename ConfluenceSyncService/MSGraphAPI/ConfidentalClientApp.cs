@@ -75,7 +75,7 @@ namespace ConfluenceSyncService.MSGraphAPI
             catch (Exception ex)
             {
 #pragma warning disable CA1416 // Validate platform compatibility
-                EventLog.WriteEntry("AutotaskTicketManagementWorkerService", "ConfidentialClientApp failed to initialize: " + ex,
+                EventLog.WriteEntry("ConfluenceSyncService", "ConfidentialClientApp failed to initialize: " + ex,
                     EventLogEntryType.Error, 999);
 #pragma warning restore CA1416 // Validate platform compatibility
                 throw new InvalidOperationException("ConfidentialClientApp failed to initialize.", ex);

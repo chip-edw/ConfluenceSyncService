@@ -19,14 +19,12 @@ namespace ConfluenceSyncService
 
             if (enableHTTPLogging)
             {
-                Log.ForContext("SourceContext", "AutoTaskTicketManager_Base.HTTP")
-                    .Debug($"[HTTP Request] {request.Method} {request.RequestUri}");
+                _logger.Debug($"[HTTP Request] {request.Method} {request.RequestUri}");
 
                 if (request.Content != null)
                 {
                     string requestContent = await request.Content.ReadAsStringAsync();
-                    Log.ForContext("SourceContext", "AutoTaskTicketManager_Base.HTTP")
-                        .Debug($"[Request Body] {requestContent}");
+                    _logger.Debug($"[Request Body] {requestContent}");
                 }
             }
 
@@ -34,19 +32,16 @@ namespace ConfluenceSyncService
 
             if (enableHTTPLogging)
             {
-                Log.ForContext("SourceContext", "AutoTaskTicketManager_Base.HTTP")
-                    .Debug($"[HTTP Response] {response.StatusCode}");
+                _logger.Debug($"[HTTP Response] {response.StatusCode}");
 
                 if (response.Content != null)
                 {
                     string responseContent = await response.Content.ReadAsStringAsync();
-                    Log.ForContext("SourceContext", "AutoTaskTicketManager_Base.HTTP")
-                        .Debug($"[Response Body] {responseContent}");
+                    _logger.Debug($"[Response Body] {responseContent}");
                 }
             }
 
             return response;
         }
     }
-
 }
