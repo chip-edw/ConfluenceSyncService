@@ -25,12 +25,27 @@ public sealed class SignatureService
 
     public bool Validate(string action, string resourceId, long expUnix, string sig)
     {
+        if (string.IsNullOrWhiteSpace(sig)) return false;
+
+        // Expiry check first (cheap reject)
         if (DateTimeOffset.FromUnixTimeSeconds(expUnix) <= DateTimeOffset.UtcNow) return false;
 
         var expected = Sign(action, resourceId, expUnix);
-        var a = WebEncoders.Base64UrlDecode(expected);
-        var b = WebEncoders.Base64UrlDecode(sig);
-        return CryptographicOperations.FixedTimeEquals(a, b);
+
+        try
+        {
+            var a = WebEncoders.Base64UrlDecode(expected);
+            var b = WebEncoders.Base64UrlDecode(sig);
+            if (a is null || b is null || a.Length != b.Length) return false;
+
+            return CryptographicOperations.FixedTimeEquals(a, b);
+        }
+        catch (FormatException)
+        {
+            // Malformed base64url in sig
+            return false;
+        }
     }
+
 }
 

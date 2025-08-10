@@ -16,8 +16,7 @@ namespace ConfluenceSyncService.Services.Clients
         private readonly ConfidentialClientApp _confidentialClientApp;
         private readonly IConfiguration _configuration;
         private readonly Serilog.ILogger _logger;
-        // Add a cache for list IDs
-        private readonly ConcurrentDictionary<string, string> _listIdCache = new();
+        private readonly ConcurrentDictionary<string, string> _listIdCache = new();         // Add a cache for list IDs
 
         public SharePointClient(HttpClient httpClient, ConfidentialClientApp confidentialClientApp, IConfiguration configuration)
         {
@@ -386,6 +385,40 @@ namespace ConfluenceSyncService.Services.Clients
                 throw;
             }
         }
+        #endregion
+
+
+        #region MarkTaskCompleteAsync
+        public async Task<string> MarkTaskCompleteAsync(string resourceId, CancellationToken ct)
+        {
+            // If your resourceId is already the SP itemId, use it directly.
+            // If it is a business key, look up itemId first (omitted for brevity).
+            var itemId = resourceId;
+
+            var siteId = _configuration["SharePoint:SiteId"]!;
+            var listId = _configuration["SharePoint:ListId"]!;
+            var statusField = _configuration["SharePoint:StatusField"] ?? "Status";
+
+            var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{itemId}/fields";
+            var body = new Dictionary<string, object> { [statusField] = "Completed" };
+
+            using var req = new HttpRequestMessage(HttpMethod.Patch, url)
+            {
+                Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
+            };
+            req.Headers.TryAddWithoutValidation("If-Match", "*");
+
+            var res = await _httpClient.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                var err = await res.Content.ReadAsStringAsync(ct);
+                _logger.Warning("SharePoint PATCH failed ({Code}): {Body}", (int)res.StatusCode, err);
+                res.EnsureSuccessStatusCode();
+            }
+
+            return itemId;
+        }
+
         #endregion
 
         // Fallback method - get all items and filter in memory (with configurable safety limits)
