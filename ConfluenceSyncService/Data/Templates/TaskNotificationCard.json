@@ -1,0 +1,78 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "msteams": { "width": "Full" },
+  "body": [
+    {
+      "type": "Container",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "Support Transition Task",
+          "weight": "Bolder",
+          "size": "Large",
+          "wrap": true
+        },
+        {
+          "type": "TextBlock",
+          "text": "${title}",
+          "size": "Medium",
+          "wrap": true
+        },
+        {
+          "type": "FactSet",
+          "facts": [
+            {
+              "title": "Customer:",
+              "value": "${customerName}"
+            },
+            {
+              "title": "Phase:",
+              "value": "${phaseName}"
+            },
+            {
+              "title": "Assignee:",
+              "value": "${assigneeDisplayName}"
+            },
+            {
+              "title": "Priority:",
+              "value": "${priority}"
+            },
+            {
+              "title": "Due:",
+              "value": "${dueDate}"
+            }
+          ]
+        },
+        {
+          "type": "TextBlock",
+          "text": "${summary}",
+          "wrap": true,
+          "spacing": "Medium"
+        }
+      ]
+    },
+    {
+      "type": "ActionSet",
+      "actions": [
+        {
+          "type": "Action.OpenUrl",
+          "title": "✅ Mark Done",
+          "url": "${completionUrl}",
+          "tooltip": "Record completion and update SharePoint/Confluence"
+        },
+        {
+          "type": "Action.OpenUrl",
+          "title": "🔍 View in Confluence",
+          "url": "${confluenceUrl}"
+        },
+        {
+          "type": "Action.OpenUrl",
+          "title": "🗂 View in SharePoint",
+          "url": "${sharePointUrl}"
+        }
+      ]
+    }
+  ]
+}
