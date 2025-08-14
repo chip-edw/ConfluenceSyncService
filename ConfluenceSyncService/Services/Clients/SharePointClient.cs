@@ -388,8 +388,8 @@ namespace ConfluenceSyncService.Services.Clients
         #endregion
 
 
-        #region MarkTaskCompleteAsync
-        public async Task<string> MarkTaskCompleteAsync(string resourceId, CancellationToken ct)
+        #region MarkTaskCompleteAsync old
+        public async Task<string> xMarkTaskCompleteAsync(string resourceId, CancellationToken ct)
         {
             // If your resourceId is already the SP itemId, use it directly.
             // If it is a business key, look up itemId first (omitted for brevity).
@@ -420,6 +420,8 @@ namespace ConfluenceSyncService.Services.Clients
         }
 
         #endregion
+
+        #region GetRecentlyModifiedItemsWithoutFilterAsyn - Ths is the fallback
 
         // Fallback method - get all items and filter in memory (with configurable safety limits)
         private async Task<List<SharePointListItemDto>> GetRecentlyModifiedItemsWithoutFilterAsync(string sitePath, string listName, DateTime sinceUtc)
@@ -527,6 +529,10 @@ namespace ConfluenceSyncService.Services.Clients
             _logger.Debug($"Fallback method: Found {results.Count} items modified since {sinceUtc} (processed {totalProcessed} total items, max allowed: {maxItems}, API returned: {totalItemsReturned})");
             return results;
         }
+
+        #endregion
+
+        #region GetListIdByNameAsync
         private async Task<string> GetListIdByNameAsync(string sitePath, string listName)
         {
             var cacheKey = $"{sitePath}|{listName}";
@@ -614,7 +620,9 @@ namespace ConfluenceSyncService.Services.Clients
 
             throw new InvalidOperationException($"List '{listName}' not found in site '{sitePath}'. Available lists: {listNames}");
         }
+        #endregion
 
+        #region GetListIdByNameWithPath
         private async Task<string> GetListIdByNameWithPath(string altSitePath, string listName)
         {
             var cacheKey = $"{altSitePath}|{listName}";
@@ -660,6 +668,110 @@ namespace ConfluenceSyncService.Services.Clients
 
             throw new InvalidOperationException($"List '{listName}' not found in alternative site path '{altSitePath}'");
         }
+
+        #endregion
+
+        #region ResolveField
+
+        private string ResolveField(string listDisplayName, string logicalName)
+        {
+            // SharePointFieldMappings : { "<ListDisplayName>": { "<LogicalName>": "<InternalName>" } }
+            var mappings = _configuration.GetSection("SharePointFieldMappings");
+            if (!mappings.Exists())
+                throw new InvalidOperationException("SharePointFieldMappings section is missing in configuration.");
+
+            // Find the list block (case-insensitive match on the JSON key)
+            var listSection = mappings
+                .GetChildren()
+                .FirstOrDefault(s => string.Equals(s.Key, listDisplayName, StringComparison.OrdinalIgnoreCase));
+
+            if (listSection is null)
+                throw new InvalidOperationException($"No field mapping block found for list '{listDisplayName}'.");
+
+            // Find the logical field entry (e.g., "Status")
+            var fieldEntry = listSection.GetChildren()
+                .FirstOrDefault(s => string.Equals(s.Key, logicalName, StringComparison.OrdinalIgnoreCase));
+
+            var internalName = fieldEntry?.Value;
+            if (string.IsNullOrWhiteSpace(internalName))
+                throw new InvalidOperationException($"No field mapping found for logical field '{logicalName}' in list '{listDisplayName}'.");
+
+            return internalName;
+        }
+
+        #endregion
+
+        #region MarkTaskCompleteAsync
+
+        public async Task<string> MarkTaskCompleteAsync(string resourceId, CancellationToken ct)
+        {
+            var listDisplayName = "Phase Tasks & Metadata";
+            var statusField = ResolveField(listDisplayName, "Status");
+
+            // For this test we assume resourceId is the SharePoint item ID in this list
+            var siteId = "v7n2m.sharepoint.com,d1ee4683-057e-41c1-abe8-8b7fcf24a609,37b9c1e6-3b8e-4e8e-981b-67291632e4c3";
+            var listId = await GetListIdAsync(siteId, listDisplayName, ct); // We'll add this if you don't have it already
+
+            var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{resourceId}/fields";
+
+            var payload = new Dictionary<string, object>
+            {
+                [statusField] = "Completed"
+            };
+
+            using var req = new HttpRequestMessage(HttpMethod.Patch, url)
+            {
+                Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            req.Headers.TryAddWithoutValidation("If-Match", "*");
+
+            var res = await _httpClient.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                var err = await res.Content.ReadAsStringAsync(ct);
+                _logger.Warning("SharePoint PATCH failed ({Code}): {Body}", (int)res.StatusCode, err);
+                res.EnsureSuccessStatusCode();
+            }
+
+            return resourceId;
+        }
+        #endregion
+
+        #region
+
+        private async Task<string> GetListIdAsync(string siteId, string listDisplayName, CancellationToken ct)
+        {
+            // Graph: GET /sites/{siteId}/lists?$filter=displayName eq '{listDisplayName}'
+            var encodedListName = Uri.EscapeDataString(listDisplayName);
+            var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists?$filter=displayName eq '{encodedListName}'";
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            var res = await _httpClient.SendAsync(req, ct);
+
+            if (!res.IsSuccessStatusCode)
+            {
+                var err = await res.Content.ReadAsStringAsync(ct);
+                _logger.Warning("Failed to get listId for {ListName} ({Code}): {Body}", listDisplayName, (int)res.StatusCode, err);
+                res.EnsureSuccessStatusCode();
+            }
+
+            var json = await res.Content.ReadAsStringAsync(ct);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+            var listId = doc.RootElement
+                            .GetProperty("value")
+                            .EnumerateArray()
+                            .FirstOrDefault()
+                            .GetProperty("id")
+                            .GetString();
+
+            if (string.IsNullOrWhiteSpace(listId))
+                throw new InvalidOperationException($"List '{listDisplayName}' not found in site {siteId}.");
+
+            return listId;
+        }
+
+        #endregion
 
     }
 }
