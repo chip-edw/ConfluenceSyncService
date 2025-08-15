@@ -387,7 +387,6 @@ namespace ConfluenceSyncService.Services.Clients
         }
         #endregion
 
-
         #region MarkTaskCompleteAsync old
         public async Task<string> xMarkTaskCompleteAsync(string resourceId, CancellationToken ct)
         {
@@ -672,7 +671,6 @@ namespace ConfluenceSyncService.Services.Clients
         #endregion
 
         #region ResolveField
-
         private string ResolveField(string listDisplayName, string logicalName)
         {
             // SharePointFieldMappings : { "<ListDisplayName>": { "<LogicalName>": "<InternalName>" } }
@@ -707,6 +705,7 @@ namespace ConfluenceSyncService.Services.Clients
         {
             var listDisplayName = "Phase Tasks & Metadata";
             var statusField = ResolveField(listDisplayName, "Status");
+            var completedDateField = ResolveField(listDisplayName, "CompletedDate");
 
             // For this test we assume resourceId is the SharePoint item ID in this list
             var siteId = "v7n2m.sharepoint.com,d1ee4683-057e-41c1-abe8-8b7fcf24a609,37b9c1e6-3b8e-4e8e-981b-67291632e4c3";
@@ -714,15 +713,19 @@ namespace ConfluenceSyncService.Services.Clients
 
             var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{resourceId}/fields";
 
+            var completedIso = DateTimeOffset.UtcNow.ToString("o"); // UTC ISO 8601
+
             var payload = new Dictionary<string, object>
             {
-                [statusField] = "Completed"
+                [statusField] = "Completed",
+                [completedDateField] = completedIso
             };
 
             using var req = new HttpRequestMessage(HttpMethod.Patch, url)
             {
                 Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
             req.Headers.TryAddWithoutValidation("If-Match", "*");
 
             var res = await _httpClient.SendAsync(req, ct);
@@ -737,8 +740,7 @@ namespace ConfluenceSyncService.Services.Clients
         }
         #endregion
 
-        #region
-
+        #region GetListIdAsync
         private async Task<string> GetListIdAsync(string siteId, string listDisplayName, CancellationToken ct)
         {
             // Graph: GET /sites/{siteId}/lists?$filter=displayName eq '{listDisplayName}'
@@ -746,6 +748,9 @@ namespace ConfluenceSyncService.Services.Clients
             var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists?$filter=displayName eq '{encodedListName}'";
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
+
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+
             var res = await _httpClient.SendAsync(req, ct);
 
             if (!res.IsSuccessStatusCode)
@@ -772,6 +777,7 @@ namespace ConfluenceSyncService.Services.Clients
         }
 
         #endregion
+
 
     }
 }

@@ -2,6 +2,7 @@ using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
 using ConfluenceSyncService.Services;
+using ConfluenceSyncService.Utilities;
 using Serilog;
 
 namespace ConfluenceSyncService
@@ -47,6 +48,66 @@ namespace ConfluenceSyncService
 
             // Call base to start the background service
             await base.StartAsync(cancellationToken);
+
+
+            //######################  Various utilities  ##########################
+
+            using var scope = _serviceScopeFactory.CreateScope();
+            var workerUtilities = new WorkerUtilities(_serviceScopeFactory);
+
+            //Validation: Get the SharePoint List actual Field Values
+            await workerUtilities.ListSharePointFieldNamesAsync(
+                "v7n2m.sharepoint.com,d1ee4683-057e-41c1-abe8-8b7fcf24a609,37b9c1e6-3b8e-4e8e-981b-67291632e4c3",
+                "Phase Tasks & Metadata");
+
+
+            Console.WriteLine("");
+
+            ////TEST: Create new Transition Tracker table with fixed Region field
+            //try
+            //{
+            //    Console.WriteLine("\n\n");
+            //    _logger.Information("=== TESTING NEW TABLE CREATION ===");
+
+            //    var createSuccess = await _confluenceClient.CreateTransitionTrackerTableAsync("6324227", "Customer Wiki Template");
+            //    Console.WriteLine($"Table creation successful: {createSuccess}");
+            //}
+            //catch (Exception ex)
+            //{
+            //    _logger.Error(ex, "Failed to create new table");
+            //}
+            //_logger.Information("=== END TABLE CREATION TEST ===");
+
+
+
+            //Console.Write("\n\n");
+            //// TEST: Update status text based on colors and parse table
+            //try
+            //{
+            //    _logger.Information("=== CONFLUENCE STATUS TEXT UPDATE AND PARSING ===");
+
+            //    // First, update any status text based on current colors
+            //    var updateSuccess = await _confluenceClient.UpdateStatusTextBasedOnColorAsync("4554759");
+            //    Console.WriteLine($"Status text update successful: {updateSuccess}");
+
+            //    // Then parse the table data
+            //    var tableData = await _confluenceClient.ParseTransitionTrackerTableAsync("4554759");
+
+            //    Console.WriteLine("=== PARSED TABLE DATA ===");
+            //    foreach (var kvp in tableData)
+            //    {
+            //        Console.WriteLine($"{kvp.Key}: {kvp.Value}");
+            //    }
+
+            //}
+            //catch (Exception ex)
+            //{
+            //    _logger.Error(ex, "Failed to test status update and parsing");
+            //}
+            //_logger.Information("=== END STATUS UPDATE AND PARSING TEST ===");
+
+
+
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
