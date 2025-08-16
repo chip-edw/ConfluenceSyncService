@@ -1,6 +1,5 @@
 ﻿using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.Models;
-using ConfluenceSyncService.Models.Configuration;
 using Serilog;
 
 namespace ConfluenceSyncService.Services
@@ -31,6 +30,12 @@ namespace ConfluenceSyncService.Services
 
                 // Load SharePoint Site/List config from appsettings.json
                 StartupConfiguration.LoadSharePointConfiguration(_configuration);
+
+                // Load Teams config from appsettings.json
+                StartupConfiguration.LoadTeamsConfiguration(_configuration);
+
+                // Load Email config from appsettings.json
+                StartupConfiguration.LoadEmailConfiguration(_configuration);
             }
 
             // Initialize in-memory secret cache if supported
@@ -39,31 +44,7 @@ namespace ConfluenceSyncService.Services
                 await initializable.InitializeAsync();
             }
 
-
-
-
             Log.Information("Startup data loaded successfully.");
-        }
-    }
-
-    public static class StartupConfiguration
-    {
-        public static List<SharePointSiteConfig> SharePointSites { get; set; } = new();
-
-        public static void LoadSharePointConfiguration(IConfiguration configuration)
-        {
-            var sharePointSection = configuration.GetSection("SharePoint");
-            var settings = sharePointSection.Get<SharePointSettings>();
-
-            if (settings == null || settings.Sites == null || settings.Sites.Count == 0)
-            {
-                Log.Warning("No SharePoint sites found in appsettings.json.");
-                SharePointSites = new List<SharePointSiteConfig>();
-                return;
-            }
-
-            SharePointSites = settings.Sites;
-            Log.Information("Loaded {Count} SharePoint sites from configuration.", SharePointSites.Count);
         }
     }
 }

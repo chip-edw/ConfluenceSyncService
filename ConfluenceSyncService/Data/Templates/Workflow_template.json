@@ -2,32 +2,32 @@
     {
         "TaskCategory": "Support Transition Packet Delivered - T-4 weeks",
         "Tasks": [
-			{
-				"_comment": "Using Teams Group Chat for POC. Will use email if allowed",
-				"TaskName": "Gentle Chaser - PM Ensure Prepared", 
-				"DefaultRole": "Project PM",
+      {
+        "_comment": "Using Teams Group Chat for POC. Will use email if allowed",
+        "TaskName": "Gentle Chaser - PM Ensure Prepared", 
+        "DefaultRole": "Project PM",
                 "AnchorDateType": "GoLive",
-				"StartOffsetDays": -20,
+        "StartOffsetDays": -20,
                 "DurationBusinessDays": 4				
-			},	
+      },	
             {
-				"_comment": "PM or Support Resource needs to confirm delivery on Confluence Customer Wiki to advance Work Flow",
+        "_comment": "PM or Support Resource needs to confirm delivery on Confluence Customer Wiki to advance Work Flow",
                 "TaskName": "Delivered",
                 "DefaultRole": "Project PM",
                 "AnchorDateType": "GoLive",
-				"StartOffsetDays": -15,
+        "StartOffsetDays": -15,
                 "DurationBusinessDays": 0
             },
             {
-				"_comment": "Support Functional to confirm review complete on Confluence Wiki",
+        "_comment": "Support Functional to confirm review complete on Confluence Wiki",
                 "TaskName": "Support Functional Review",
                 "DefaultRole": "Support Resource",
                 "AnchorDateType": "GoLive",
-				"StartOffsetDays": -14,
+        "StartOffsetDays": -14,
                 "DurationBusinessDays": 3
             },
             {
-				"_comment": "Support Functional to confirm review complete on Confluence Wiki",
+        "_comment": "Support Technical to confirm review complete on Confluence Wiki",
                 "TaskName": "Support Technical Review",
                 "DefaultRole": "Support Resource",
                 "AnchorDateType": "GoLive",
@@ -35,7 +35,7 @@
                 "DurationBusinessDays": 3
             },
             {
-				"_comment": "Doesn't matter how long Hypercare is. Start the discussions 2 weeks (10 Buss days) before Hyper-Care End Date",
+        "_comment": "Doesn't matter how long Hypercare is. Start the discussions 2 weeks (10 Buss days) before Hyper-Care End Date",
                 "TaskName": "Start Support access discussions", 
                 "DefaultRole": "Project PM",
                 "AnchorDateType": "HypercareEnd",
@@ -51,14 +51,14 @@
                 "TaskName": "Questions / Comments Delivered to PM",
                 "DefaultRole": "Support Resource",
                 "AnchorDateType": "GoLive",
-				"StartOffsetDays": -11,
+        "StartOffsetDays": -11,
                 "DurationBusinessDays": 3
             },
             {
                 "TaskName": "Support attendees confirmed",
                 "DefaultRole": "Rachel/Chip",
                 "AnchorDateType": "GoLive",
-				"StartOffsetDays": -11,
+        "StartOffsetDays": -11,
                 "DurationBusinessDays": 3
             }
         ]
@@ -70,31 +70,31 @@
                 "TaskName": "* No P1 or P2 Tickets",
                 "DefaultRole": "Rachel/Chip",
                 "AnchorDateType": "HypercareEnd",
-				"StartOffsetDays": -6,
+        "StartOffsetDays": -6,
                 "DurationBusinessDays": 1
             },
             {
-				
+        
                 "TaskName": "*Customer readiness *Customer UAT Sign Off provided",
                 "DefaultRole": "Rachel/Chip",
                 "AnchorDateType": "HypercareEnd",
-				"StartOffsetDays": -6,
+        "StartOffsetDays": -6,
                 "DurationBusinessDays": 1
             },
-			{
-				"_comment": "",
+      {
+        "_comment": "",
                 "TaskName": "All customizations documented (FFD and TDD > 40 hours estimate)",
                 "DefaultRole": "Rachel/Chip",
                 "AnchorDateType": "HypercareEnd",
-				"StartOffsetDays": -6,
+        "StartOffsetDays": -6,
                 "DurationBusinessDays": 1
             },			
             {
-				"_comment": "",
+        "_comment": "",
                 "TaskName": "* Access to environments provided",
                 "DefaultRole": "Project PM",
                 "AnchorDateType": "HypercareEnd",
-				"StartOffsetDays": -6,
+        "StartOffsetDays": -6,
                 "DurationBusinessDays": 1
             }
         ]
@@ -103,7 +103,7 @@
         "TaskCategory": "Transition Discussion Meeting",
         "Tasks": [
             {
-				"_comment": "Doesn't matter how long Hypercare is. Start the discussions 2 weeks (10 Bus dys) before Hyper-Care End Date",
+        "_comment": "Doesn't matter how long Hypercare is. Start the discussions 2 weeks (10 Bus dys) before Hyper-Care End Date",
                 "TaskName": "Meeting Scheduled",
                 "DefaultRole": "PM Name here",
                 "AnchorDateType": "HypercareEnd",

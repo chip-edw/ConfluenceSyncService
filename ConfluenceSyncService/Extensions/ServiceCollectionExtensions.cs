@@ -53,6 +53,24 @@ namespace ConfluenceSyncService.Extensions
                 return new SharePointClient(httpClient, confidentialClient, configuration);
             });
 
+            services.AddTransient<TeamsClient>(provider =>
+            {
+                var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
+                var httpClient = httpClientFactory.CreateClient();
+                var confidentialClient = provider.GetRequiredService<ConfidentialClientApp>();
+                var configuration = provider.GetRequiredService<IConfiguration>();
+                return new TeamsClient(httpClient, confidentialClient, configuration);
+            });
+
+            services.AddTransient<EmailClient>(provider =>
+            {
+                var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
+                var httpClient = httpClientFactory.CreateClient();
+                var confidentialClient = provider.GetRequiredService<ConfidentialClientApp>();
+                var configuration = provider.GetRequiredService<IConfiguration>();
+                return new EmailClient(httpClient, confidentialClient, configuration);
+            });
+
             services.AddHttpClient<ConfluenceClient>()
                 .AddTypedClient((httpClient, provider) =>
                 {

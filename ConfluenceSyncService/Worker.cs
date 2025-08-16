@@ -59,9 +59,24 @@ namespace ConfluenceSyncService
             await workerUtilities.ListSharePointFieldNamesAsync(
                 "v7n2m.sharepoint.com,d1ee4683-057e-41c1-abe8-8b7fcf24a609,37b9c1e6-3b8e-4e8e-981b-67291632e4c3",
                 "Phase Tasks & Metadata");
-
-
             Console.WriteLine("");
+
+            ////Validation: Discover Teams resources
+            //try
+            //{
+            //    Console.WriteLine("\n=== TEAMS DISCOVERY UTILITY ===");
+            //    _logger.Information("=== STARTING TEAMS DISCOVERY ===");
+
+            //    await workerUtilities.DiscoverTeamsResourcesAsync();
+
+            //    Console.WriteLine("=== END TEAMS DISCOVERY ===\n");
+            //}
+            //catch (Exception ex)
+            //{
+            //    _logger.Error(ex, "Failed to discover Teams resources");
+            //}
+
+            //Console.WriteLine();
 
             ////TEST: Create new Transition Tracker table with fixed Region field
             //try
@@ -107,7 +122,6 @@ namespace ConfluenceSyncService
             //_logger.Information("=== END STATUS UPDATE AND PARSING TEST ===");
 
 
-
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -130,6 +144,10 @@ namespace ConfluenceSyncService
             {
                 // Initial token acquisition
                 await AcquireInitialTokenAsync(stoppingToken);
+
+                // Service Start Admin Email
+                var workerUtilities = new WorkerUtilities(_serviceScopeFactory);
+                await workerUtilities.SendServiceStartupEmailAsync();
 
                 // Main worker loop
                 while (!stoppingToken.IsCancellationRequested && !_cancelTokenIssued)
@@ -218,12 +236,12 @@ namespace ConfluenceSyncService
                 string accessToken = await _confidentialClientApp.GetAccessToken();
                 _logger.Information(">>> Token acquired: {FirstTen}", accessToken.Substring(0, 10));
 
-                // Optional: Send startup email (configure via appsettings)
-                bool sendStartupEmail = _configuration.GetValue<bool>("GeneralSettings:SendStartupEmail", false);
-                if (sendStartupEmail)
-                {
-                    await SendStartupNotificationAsync(accessToken);
-                }
+                //// Optional: Send startup email (configure via appsettings)
+                //bool sendStartupEmail = _configuration.GetValue<bool>("GeneralSettings:SendStartupEmail", false);
+                //if (sendStartupEmail)
+                //{
+                //    await SendStartupNotificationAsync(accessToken);
+                //}
             }
             catch (Exception ex)
             {
@@ -232,26 +250,26 @@ namespace ConfluenceSyncService
             }
         }
 
-        private async Task SendStartupNotificationAsync(string accessToken)
-        {
-            try
-            {
-                string subject = $"Confluence Sync Service - Worker Started Successfully - {DateTime.Now}";
-                string body = $"The Confluence Sync Service Worker has started at {DateTime.Now}";
-                string adminEmail = _configuration.GetValue<string>("GeneralSettings:AdminEmail", "admin@example.com");
-                string url = "https://graph.microsoft.com/v1.0/users/attms@v7n2m.onmicrosoft.com/sendMail";
+        //private async Task SendStartupNotificationAsync(string accessToken)
+        //{
+        //    try
+        //    {
+        //        string subject = $"Confluence Sync Service - Worker Started Successfully - {DateTime.Now}";
+        //        string body = $"The Confluence Sync Service Worker has started at {DateTime.Now}";
+        //        string adminEmail = _configuration.GetValue<string>("GeneralSettings:AdminEmail", "admin@example.com");
+        //        string url = "https://graph.microsoft.com/v1.0/users/attms@v7n2m.onmicrosoft.com/sendMail";
 
-                // Implement your email sending logic here
-                // await _emailApiHelper.SendEmailAsync(url, accessToken, subject, body, adminEmail);
+        //        // Implement your email sending logic here
+        //        // await _emailApiHelper.SendEmailAsync(url, accessToken, subject, body, adminEmail);
 
-                _logger.Information("Startup notification email sent to {AdminEmail}", adminEmail);
-            }
-            catch (Exception ex)
-            {
-                _logger.Warning(ex, "Failed to send startup notification email");
-                // Don't throw - this is not critical
-            }
-        }
+        //        _logger.Information("Startup notification email sent to {AdminEmail}", adminEmail);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        _logger.Warning(ex, "Failed to send startup notification email");
+        //        // Don't throw - this is not critical
+        //    }
+        //}
 
         private async Task ProcessWorkCycleAsync(CancellationToken cancellationToken)
         {
