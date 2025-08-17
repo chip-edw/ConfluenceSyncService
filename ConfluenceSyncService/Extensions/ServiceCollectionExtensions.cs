@@ -8,6 +8,7 @@ using ConfluenceSyncService.Services.Clients;
 using ConfluenceSyncService.Services.Maintenance;
 using ConfluenceSyncService.Services.Secrets;
 using ConfluenceSyncService.Services.Sync;
+using ConfluenceSyncService.Services.Workflow;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Client;
 
@@ -28,6 +29,7 @@ namespace ConfluenceSyncService.Extensions
 
             #region Business Services and Internal API
             services.AddSingleton<StartupLoaderService>();
+            services.AddSingleton<IWorkflowMappingProvider, WorkflowMappingProvider>();
             services.AddScoped<ISyncOrchestratorService, SyncOrchestratorService>();
 
             // SignatureService: inject base64 key once via DI (Option B)

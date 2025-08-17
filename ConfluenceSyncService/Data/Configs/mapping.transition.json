@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "workflowId": "support-transition-v1",
+  "defaults": {
+    "timezone": "America/Chicago",
+    "calendar": "BusinessUS"
+  },
+  "lists": {
+    "transitionTracker": {
+      "name": "Transition Tracker",
+      "idField": "Id",
+      "columns": {
+        "customerId": "CustomerId",
+        "title": "Title",
+        "customerWiki": "Customer Wiki",
+        "region": "Region",
+        "phaseName": "Phase",
+        "goLive": "Go-Live Date",
+        "hypercareEnd": "Support Go-Live Date",
+        "statusCustomer": "Status Cust.",
+        "statusFF": "Status FF",
+        "notes": "Notes",
+        "confluencePageId": "ConfluencePageId",
+        "syncTracker": "Sync Tracker"
+      },
+      "resolvers": {
+        "customerName": [
+          {
+            "from": "customerWiki",
+            "fn": "nameFromConfluenceUrlOrText"
+          },
+          {
+            "from": "title"
+          }
+        ]
+      }
+    },
+    "transitionCustomers": {
+      "name": "TransitionCustomers",
+      "idField": "Id",
+      "columns": {
+        "customerId": "CustomerId",
+        "customer": "Customer",
+        "activePhaseId": "ActivePhaseID",
+        "confluencePageId": "ConfluencePageID",
+        "confluencePageUrl": "ConfluencePageURL"
+      }
+    },
+    "phaseTasks": {
+      "name": "Phase Tasks & Metadata",
+      "idField": "Id",
+      "columns": {
+        "customerId": "CustomerId",
+        "customer": "Customer",
+        "phaseId": "PhaseID",
+        "phaseName": "PhaseName",
+        "taskId": "TaskId",
+        "taskName": "TaskName",
+        "taskCategory": "TaskCategory",
+        "role": "Role",
+        "anchorDateType": "AnchorDateType",
+        "startOffsetDays": "StartOffsetDays",
+        "durationBusinessDays": "DurationBusinessDays",
+        "goLive": "GoLiveDate",
+        "hypercareEnd": "HypercareEndDate",
+        "status": "Status",
+        "completedDate": "CompletedDate",
+        "chaseCount": "ChaseCount",
+        "nextChaseAtUtc": "NextChaseAtUtc",
+        "ackedBy": "AckedBy",
+        "notifiedAtUtc": "NotifiedAtUtc",
+        "correlationId": "CorrelationId"
+      }
+    },
+    "transitionResources": {
+      "name": "Transition Resources",
+      "idField": "Id",
+      "columns": {
+        "resourceEmail": "ResourceEmail",
+        "resourceId": "ResourceId",
+        "role": "Role",
+        "region": "Region"
+      }
+    }
+  },
+  "keys": {
+    "customerId": "transitionTracker.customerId",
+    "customerName": "transitionTracker.customerName",
+    "region": "transitionTracker.region",
+    "phaseName": "transitionTracker.phaseName",
+    "goLive": "transitionTracker.goLive",
+    "hypercareEnd": "transitionTracker.hypercareEnd",
+    "trackerRowId": "transitionTracker.Id"
+  },
+  "phaseIdentity": {
+    "lookupBy": [
+      "customerId",
+      "phaseName",
+      "goLive"
+    ],
+    "idField": "phaseId",
+    "generate": "guid"
+  },
+  "idempotency": {
+    "format": "{{customerId}}|{{phaseId}}|{{workflowId}}|{{activity.key}}",
+    "hash": "sha1"
+  }
+}

@@ -1,6 +1,7 @@
 using Asp.Versioning;
 using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.Extensions;
+using ConfluenceSyncService.Services.Workflow;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -74,6 +75,10 @@ namespace ConfluenceSyncService
                     await StartupConfiguration.LoadProtectedSettingsAsync(secretsProvider);
                     StartupConfiguration.LoadMsGraphConfig();
                     Log.Information($"{nameof(StartupConfiguration.LoadMsGraphConfig)} complete");
+
+                    //Load the workflow mapping once at startup
+                    var mappingProvider = scope.ServiceProvider.GetRequiredService<IWorkflowMappingProvider>();
+                    await mappingProvider.LoadAsync(); // expects to log workflowId + version
                 }
 
                 ConfigureEndpoints(app, managementApiPort);
