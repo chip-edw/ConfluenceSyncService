@@ -1,6 +1,7 @@
 using Asp.Versioning;
 using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.Extensions;
+using ConfluenceSyncService.Services.State;
 using ConfluenceSyncService.Services.Workflow;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -79,6 +80,23 @@ namespace ConfluenceSyncService
                     //Load the workflow mapping once at startup
                     var mappingProvider = scope.ServiceProvider.GetRequiredService<IWorkflowMappingProvider>();
                     await mappingProvider.LoadAsync(); // expects to log workflowId + version
+
+                    var cursorStore = scope.ServiceProvider.GetRequiredService<ICursorStore>();
+
+                    const string TrackerCursorKey = "Cursor:TransitionTracker:lastModifiedUtc";
+                    var current = await cursorStore.GetAsync(TrackerCursorKey);
+                    if (string.IsNullOrWhiteSpace(current))
+                    {
+                        // Seed to a safe old date
+                        var seed = "2000-01-01T00:00:00Z";
+                        await cursorStore.SetAsync(TrackerCursorKey, seed);
+                        Log.Information("tracker.cursor seeded {lastModifiedUtc}", seed);
+                    }
+                    else
+                    {
+                        Log.Information("tracker.cursor {lastModifiedUtc}", current);
+                    }
+
                 }
 
                 ConfigureEndpoints(app, managementApiPort);

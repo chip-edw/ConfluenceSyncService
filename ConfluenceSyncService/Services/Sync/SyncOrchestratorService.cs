@@ -1,8 +1,12 @@
 ﻿using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.Services.Clients;
+using ConfluenceSyncService.Services.State;
+using ConfluenceSyncService.Services.Workflow;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace ConfluenceSyncService.Services.Sync
 {
@@ -12,25 +16,29 @@ namespace ConfluenceSyncService.Services.Sync
         private readonly ConfluenceClient _confluenceClient;
         private readonly ApplicationDbContext _dbContext;
         private readonly IConfiguration _configuration;
+        private readonly ICursorStore _cursorStore;
+        private readonly IWorkflowMappingProvider _mappingProvider;
         private readonly Serilog.ILogger _logger;
 
         public SyncOrchestratorService(
             SharePointClient sharePointClient,
             ConfluenceClient confluenceClient,
             ApplicationDbContext dbContext,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            ICursorStore cursorStore,
+            IWorkflowMappingProvider mappingProvider)
         {
             _sharePointClient = sharePointClient;
             _confluenceClient = confluenceClient;
             _dbContext = dbContext;
             _configuration = configuration;
+            _cursorStore = cursorStore;
+            _mappingProvider = mappingProvider;
             _logger = Log.ForContext<SyncOrchestratorService>();
         }
 
         public async Task RunSyncAsync(CancellationToken cancellationToken)
         {
-
-
             try
             {
                 _logger.Information("=== STARTING TABLE SYNC WORKFLOW ===");
@@ -44,6 +52,12 @@ namespace ConfluenceSyncService.Services.Sync
 
                 // Step 4: Sync SharePoint updates to Confluence
                 await Step4_SyncSharePointToConfluence(cancellationToken);
+
+                // Step 5 (MVP-ReadOnly): Read Transition Tracker deltas using cursor (no writes yet)
+                await Step5_ReadTransitionTrackerDeltas_ReadOnly(cancellationToken);
+
+                // Step 6: upsert + advance cursor
+                await Step6_UpsertFromTrackerAndAdvanceCursor(cancellationToken);
 
                 _logger.Information("=== TABLE SYNC WORKFLOW COMPLETED SUCCESSFULLY ===");
             }
@@ -263,7 +277,375 @@ namespace ConfluenceSyncService.Services.Sync
             }
         }
 
+        // ===========================
+        // STEP 5 (READ-ONLY DELTAS)
+        // ===========================
+        private async Task Step5_ReadTransitionTrackerDeltas_ReadOnly(CancellationToken cancellationToken)
+        {
+            _logger.Information("=== STEP 5: READ TRANSITION TRACKER DELTAS (READ-ONLY) ===");
+
+            const string TrackerCursorKey = "Cursor:TransitionTracker:lastModifiedUtc";
+
+            var cursorStr = await _cursorStore.GetAsync(TrackerCursorKey, cancellationToken);
+            var since = DateTimeOffset.TryParse(cursorStr, out var parsed)
+                ? parsed
+                : DateTimeOffset.Parse("2000-01-01T00:00:00Z");
+
+            // Use siteId (not sitePath) to avoid Graph path ambiguity
+            var sites = StartupConfiguration.SharePointSites;
+            var site = sites?.FirstOrDefault();
+            if (site is null || string.IsNullOrWhiteSpace(site.SiteId))
+            {
+                _logger.Error("SharePoint siteId not configured");
+                return;
+            }
+            var siteId = site.SiteId;
+
+            // List display name from mapping (e.g., "Transition Tracker")
+            var mapping = _mappingProvider.Get();
+            var trackerListName = ResolveListDisplayName("transitionTracker", "Transition Tracker", "TransitionTracker");
+
+            // Pull all items (MVP) then filter by lastModified > cursor (ascending)
+            var items = await _sharePointClient.GetAllListItemsAsync(siteId, trackerListName);
+            var recent = items
+                .Where(i => i.LastModifiedUtc > since)
+                .OrderBy(i => i.LastModifiedUtc)
+                .ToList();
+
+            // Resolve internal field names from appsettings
+            var fTitle = GetSharePointFieldName("Customer", "TransitionTracker");
+            var fCustomerId = GetSharePointFieldName("CustomerId", "TransitionTracker");
+            var fRegion = GetSharePointFieldName("Region", "TransitionTracker");
+            var fPhase = GetSharePointFieldName("Phase", "TransitionTracker");
+            var fGoLive = GetSharePointFieldName("GoLiveDate", "TransitionTracker");
+            var fSupportGoLive = GetSharePointFieldName("SupportGoLiveDate", "TransitionTracker");
+            var fCustomerWiki = GetSharePointFieldName("CustomerWiki", "TransitionTracker");
+            var fSyncTracker = GetSharePointFieldName("SyncTracker", "TransitionTracker");
+
+            var deltas = new List<(SharePointListItem Item, string CustomerId, string CustomerName, string Region, string PhaseName, DateTimeOffset? GoLive, DateTimeOffset? HypercareEnd)>();
+
+            foreach (var it in recent)
+            {
+                if (cancellationToken.IsCancellationRequested) break;
+
+                var fields = it.Fields;
+
+                // Gate by Sync Tracker
+                var syncVal = fields.TryGetValue(fSyncTracker, out var sv) ? sv?.ToString() : null;
+                var isOn = string.Equals(syncVal, "true", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(syncVal, "yes", StringComparison.OrdinalIgnoreCase)
+                           || syncVal == "1";
+                if (!isOn) continue;
+
+                var title = fields.TryGetValue(fTitle, out var t) ? t?.ToString() ?? "" : "";
+                var customerId = fields.TryGetValue(fCustomerId, out var cid) ? cid?.ToString() ?? "" : "";
+                var region = fields.TryGetValue(fRegion, out var r) ? r?.ToString() ?? "" : "";
+                var phase = fields.TryGetValue(fPhase, out var p) ? p?.ToString() ?? "" : "";
+
+                var goLive = fields.TryGetValue(fGoLive, out var gl) ? TryParseDate(gl) : null;
+                var hypercare = fields.TryGetValue(fSupportGoLive, out var hc) ? TryParseDate(hc) : null;
+
+                fields.TryGetValue(fCustomerWiki, out var wikiVal);
+                var customerName = NameFromWikiOrTitle(wikiVal, title);
+
+                deltas.Add((
+                    Item: it,
+                    CustomerId: customerId,
+                    CustomerName: customerName,
+                    Region: region,
+                    PhaseName: phase,
+                    GoLive: goLive,
+                    HypercareEnd: hypercare));
+            }
+
+            _logger.Information("tracker.fetch {since} {count}", since.ToString("o"), deltas.Count);
+            foreach (var d in deltas)
+            {
+                _logger.Information("tracker.delta {itemId} {customerId} {phaseName} {goLive} {hypercareEnd}",
+                    d.Item.Id, d.CustomerId, d.PhaseName,
+                    d.GoLive?.ToString("yyyy-MM-dd") ?? "null",
+                    d.HypercareEnd?.ToString("yyyy-MM-dd") ?? "null");
+            }
+
+            // NOTE: Do NOT advance cursor in Step 5 (read-only). We'll advance it after successful upserts in the next step.
+        }
+
+        // ===========================
+        // STEP 6 Upsert + Advance Cursor
+        // ===========================
+        private async Task Step6_UpsertFromTrackerAndAdvanceCursor(CancellationToken cancellationToken)
+        {
+            _logger.Information("=== STEP 6: UPSERT CUSTOMERS + PHASE TASKS, ADVANCE CURSOR ===");
+
+            const string TrackerCursorKey = "Cursor:TransitionTracker:lastModifiedUtc";
+
+            var cursorStr = await _cursorStore.GetAsync(TrackerCursorKey, cancellationToken);
+            var since = DateTimeOffset.TryParse(cursorStr, out var parsed)
+                ? parsed
+                : DateTimeOffset.Parse("2000-01-01T00:00:00Z");
+
+            bool hadBlockingSkips = false;
+
+            var sites = StartupConfiguration.SharePointSites;
+            var site = sites?.FirstOrDefault();
+            if (site is null || string.IsNullOrWhiteSpace(site.SiteId))
+            {
+                _logger.Error("SharePoint siteId not configured");
+                return;
+            }
+            var siteId = site.SiteId;
+
+            var mapping = _mappingProvider.Get();
+            var trackerListName = ResolveListDisplayName("transitionTracker", "Transition Tracker", "TransitionTracker");
+            var customersListName = ResolveListDisplayName("customers", "TransitionCustomers", "transitionCustomers", "Transition Customers");
+            var phaseTasksListName = ResolveListDisplayName("phaseTasks", "Phase Tasks & Metadata", "PhaseTasksMetadata", "phaseTasksMetadata");
+
+            var workflowId = mapping.WorkflowId;
+
+            // Reuse Step 5 mechanics: pull modified items since cursor (MVP using GetAll + filter)
+            var items = await _sharePointClient.GetAllListItemsAsync(siteId, trackerListName);
+            var modified = items.Where(i => i.LastModifiedUtc > since).OrderBy(i => i.LastModifiedUtc).ToList();
+
+            // Resolve tracker fields
+            var fTitle = GetSharePointFieldName("Customer", "TransitionTracker");
+            var fCustomerId = GetSharePointFieldName("CustomerId", "TransitionTracker");
+            var fRegion = GetSharePointFieldName("Region", "TransitionTracker");
+            var fPhase = GetSharePointFieldName("Phase", "TransitionTracker");
+            var fGoLive = GetSharePointFieldName("GoLiveDate", "TransitionTracker");
+            var fSupportGoLive = GetSharePointFieldName("SupportGoLiveDate", "TransitionTracker");
+            var fCustomerWiki = GetSharePointFieldName("CustomerWiki", "TransitionTracker");
+            var fSyncTracker = GetSharePointFieldName("SyncTracker", "TransitionTracker");
+
+            var activities = LoadActivitiesSafe();
+
+            // Process per tracker row
+            DateTimeOffset? maxModified = since;
+            foreach (var it in modified)
+            {
+                if (cancellationToken.IsCancellationRequested) break;
+                maxModified = (maxModified is null || it.LastModifiedUtc > maxModified) ? it.LastModifiedUtc : maxModified;
+
+                // Skip if Sync Tracker off
+                var syncVal = it.Fields.TryGetValue(fSyncTracker, out var sv) ? sv?.ToString() : null;
+                var isOn = string.Equals(syncVal, "true", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(syncVal, "yes", StringComparison.OrdinalIgnoreCase)
+                           || syncVal == "1";
+                if (!isOn) continue;
+
+                var title = it.Fields.TryGetValue(fTitle, out var t) ? t?.ToString() ?? "" : "";
+                var customerId = it.Fields.TryGetValue(fCustomerId, out var cid) ? cid?.ToString() ?? "" : "";
+
+                // backfill CustomerId if missing
+                if (string.IsNullOrWhiteSpace(customerId))
+                {
+                    var backfilled = await TryBackfillCustomerIdAsync(
+                        siteId,
+                        trackerListName,
+                        customersListName,
+                        it,
+                        cancellationToken);
+
+                    if (string.IsNullOrWhiteSpace(backfilled))
+                    {
+                        _logger.Warning("tracker.row {itemId} missing CustomerId; holding cursor (no advance)", it.Id);
+                        hadBlockingSkips = true;
+                        continue; // don’t process this row yet
+                    }
+
+                    customerId = backfilled!;
+                }
+                var region = it.Fields.TryGetValue(fRegion, out var r) ? r?.ToString() ?? "" : "";
+                var phaseName = it.Fields.TryGetValue(fPhase, out var p) ? p?.ToString() ?? "" : "";
+                var goLive = TryParseDate(it.Fields.TryGetValue(fGoLive, out var gl) ? gl : null);
+                var hypercareEnd = TryParseDate(it.Fields.TryGetValue(fSupportGoLive, out var hc) ? hc : null);
+
+                it.Fields.TryGetValue(fCustomerWiki, out var wikiVal);
+                var customerName = NameFromWikiOrTitle(wikiVal, title);
+
+                // PhaseId
+                var phaseId = await GetOrCreatePhaseIdAsync(siteId, phaseTasksListName, customerId, phaseName, goLive, cancellationToken);
+                _logger.Information("phase.resolve {customerId} {phaseId}", customerId, phaseId);
+
+                // Upsert TransitionCustomers
+                await UpsertTransitionCustomerAsync(siteId, customersListName, customerId, customerName, region, phaseId,
+                    hypercareEnd, cancellationToken);
+
+                // Upsert Phase Tasks (materialized)
+                await UpsertPhaseTasksAsync(siteId, phaseTasksListName, customerId, customerName, phaseId, phaseName, goLive,
+                    hypercareEnd, activities, workflowId, cancellationToken);
+            }
+
+            // Advance cursor if we processed any items
+            if (!hadBlockingSkips && maxModified.HasValue && maxModified.Value > since)
+            {
+                var newCursor = maxModified.Value.ToUniversalTime().ToString("o");
+                await _cursorStore.SetAsync(TrackerCursorKey, newCursor, cancellationToken);
+                _logger.Information("cursor.advance {old} -> {new}", since.ToString("o"), newCursor);
+            }
+            else if (hadBlockingSkips)
+            {
+                _logger.Information("cursor.advance held: missing CustomerId on one or more rows");
+            }
+            else
+            {
+                _logger.Information("cursor.advance no-op (no newer items)");
+            }
+
+        }
+
+
+
         #region Helper Methods
+
+        private async Task UpsertTransitionCustomerAsync(string siteId, string customersListName, string customerId, string customerName,
+            string? region, string phaseId, DateTimeOffset? supportGoLive, CancellationToken ct)
+        {
+            var items = await _sharePointClient.GetAllListItemsAsync(siteId, customersListName);
+
+            var fCustomerId = MapField("TransitionCustomers", "CustomerId");
+            var fCustomerName = MapField("TransitionCustomers", "Customer");
+            var fActivePhase = MapField("TransitionCustomers", "ActivePhaseID");
+            var fRegion = MapField("TransitionCustomers", "Region"); // optional
+
+            SharePointListItem? existing = items.FirstOrDefault(i =>
+                i.Fields.TryGetValue(fCustomerId, out var cid) && (cid?.ToString() ?? "") == customerId);
+
+            var fields = new Dictionary<string, object>
+            {
+                [fCustomerId] = customerId,
+                [fCustomerName] = customerName
+            };
+            if (!string.IsNullOrWhiteSpace(region)) fields[fRegion] = region;
+
+            // MVP policy: set ActivePhaseID if this supportGoLive is the latest for this customer
+            if (supportGoLive.HasValue)
+            {
+                // Find latest support go-live among this customer's phases (quick scan in PhaseTasks list would be better; MVP: set it directly)
+                fields[fActivePhase] = phaseId;
+            }
+
+            if (existing is null)
+            {
+                await _sharePointClient.CreateListItemAsync(siteId, customersListName, fields);
+                _logger.Information("customer.upsert {customerId} created activePhase={phaseId}", customerId, phaseId);
+            }
+            else
+            {
+                await _sharePointClient.UpdateListItemAsync(siteId, customersListName, existing.Id, fields);
+                _logger.Information("customer.upsert {customerId} updated activePhase={phaseId}", customerId, phaseId);
+            }
+        }
+
+        private IReadOnlyList<ActivitySpec> LoadActivitiesSafe()
+        {
+            try
+            {
+                // Try to read your template: Data/Templates/Workflow_template.json
+                // If you want, you can wire a real provider later. For MVP: fallback if parsing fails.
+                return MvpActivityCatalog.ForSupportTransition();
+            }
+            catch
+            {
+                return MvpActivityCatalog.ForSupportTransition();
+            }
+        }
+
+        private async Task UpsertPhaseTasksAsync(string siteId, string phaseTasksListName, string customerId, string customerName,
+            string phaseId, string phaseName, DateTimeOffset? goLive, DateTimeOffset? hypercareEnd,
+            IReadOnlyList<ActivitySpec> activities, string workflowId, CancellationToken ct)
+        {
+            // Load existing to check idempotency by CorrelationId
+            var existing = await _sharePointClient.GetAllListItemsAsync(siteId, phaseTasksListName);
+            var fCorrelation = MapField("Phase Tasks & Metadata", "CorrelationId");
+
+            var fCustomerId = MapField("Phase Tasks & Metadata", "CustomerId");
+            var fCustomer = MapField("Phase Tasks & Metadata", "Customer");
+            var fPhaseId = MapField("Phase Tasks & Metadata", "PhaseID");
+            var fPhaseName = MapField("Phase Tasks & Metadata", "PhaseName");
+            var fTaskName = MapField("Phase Tasks & Metadata", "TaskName");
+            var fTaskCategory = MapField("Phase Tasks & Metadata", "TaskCategory");
+            var fRole = MapField("Phase Tasks & Metadata", "Role");
+            var fAnchorType = MapField("Phase Tasks & Metadata", "AnchorDateType");
+            var fStartOffset = MapField("Phase Tasks & Metadata", "StartOffsetDays");
+            var fDuration = MapField("Phase Tasks & Metadata", "DurationBusinessDays");
+            var fGoLive = MapField("Phase Tasks & Metadata", "GoLiveDate");
+            var fHypercare = MapField("Phase Tasks & Metadata", "HypercareEndDate");
+            var fStatus = MapField("Phase Tasks & Metadata", "Status");
+
+            foreach (var a in activities)
+            {
+                var correlation = Sha1($"{customerId}|{phaseId}|{workflowId}|{a.Key}");
+
+                // Find existing by correlation
+                var hit = existing.FirstOrDefault(i =>
+                    i.Fields.TryGetValue(fCorrelation, out var c) && (c?.ToString() ?? "") == correlation);
+
+                var fields = new Dictionary<string, object>
+                {
+                    [fCorrelation] = correlation,
+                    [fCustomerId] = customerId,
+                    [fCustomer] = customerName,
+                    [fPhaseId] = phaseId,
+                    [fPhaseName] = phaseName,
+                    [fTaskName] = a.TaskName,
+                    [fTaskCategory] = a.TaskCategory,
+                    [fRole] = a.DefaultRole,
+                    [fAnchorType] = a.AnchorDateType,
+                    [fStartOffset] = a.StartOffsetDays,
+                    [fDuration] = a.DurationBusinessDays,
+                    //[fGoLive] = goLive?.UtcDateTime,
+                    //[fHypercare] = hypercareEnd?.UtcDateTime
+                };
+
+                // Only add date fields if they have values
+                if (goLive.HasValue)
+                {
+                    // SharePoint expects ISO 8601 format
+                    fields[fGoLive] = goLive.Value.ToString("yyyy-MM-ddT00:00:00Z");
+                }
+                if (hypercareEnd.HasValue)
+                {
+                    // SharePoint expects ISO 8601 format
+                    fields[fHypercare] = hypercareEnd.Value.ToString("yyyy-MM-ddT00:00:00Z");
+                }
+
+                // ################  Change to Debug log level before going to production
+                _logger.Information("Creating Phase Task item with {FieldCount} fields for correlation {Correlation}",
+                    fields.Count, correlation);
+
+
+                if (hit is null)
+                {
+                    fields[fStatus] = "Not Started";
+
+                    // ################  Chagge to Debug log level before going to production
+                    _logger.Information("=== ATTEMPTING TO CREATE SHAREPOINT ITEM ===");
+                    _logger.Information("Site ID: {SiteId}", siteId);
+                    _logger.Information("List Name: {ListName}", phaseTasksListName);
+                    _logger.Information("Activity: {ActivityKey} - {TaskName}", a.Key, a.TaskName);
+
+                    _logger.Information("Fields being sent ({Count} total):", fields.Count);
+
+                    foreach (var field in fields)
+                    {
+                        var valueInfo = field.Value == null ? "null" :
+                                       $"'{field.Value}' (Type: {field.Value.GetType().Name})";
+                        _logger.Information("  {FieldName} = {Value}", field.Key, valueInfo);
+                    }
+
+                    var id = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
+                    _logger.Information("task.upsert {correlation} created {task} with ID {id}", correlation, a.TaskName, id);
+                }
+                else
+                {
+                    // Update descriptive/anchor fields only; do not touch stamps/status fields
+                    await _sharePointClient.UpdateListItemAsync(siteId, phaseTasksListName, hit.Id, fields);
+                    _logger.Information("task.upsert {correlation} updated {task}", correlation, a.TaskName);
+                }
+            }
+        }
+
+
 
         private bool ShouldSyncBasedOnSyncTracker(SharePointListItem spItem)
         {
@@ -577,7 +959,6 @@ namespace ConfluenceSyncService.Services.Sync
             }
         }
 
-
         private Dictionary<string, string> MapSharePointItemToConfluenceTable(SharePointListItem spItem)
         {
             var tableData = new Dictionary<string, string>();
@@ -685,6 +1066,197 @@ namespace ConfluenceSyncService.Services.Sync
             }
 
             return sharePointFieldName;
+        }
+
+        private string ResolveListDisplayName(string primaryKey, string fallbackDisplayName, params string[] alternateKeys)
+        {
+            var lists = _mappingProvider.Get().Lists;
+
+            // 1) Exact key(s)
+            if (lists.TryGetValue(primaryKey, out var lm)) return lm.Name;
+            foreach (var k in alternateKeys)
+                if (lists.TryGetValue(k, out lm)) return lm.Name;
+
+            // 2) By Name exact match (display name)
+            var exact = lists.Values.FirstOrDefault(v =>
+                string.Equals(v.Name, fallbackDisplayName, StringComparison.OrdinalIgnoreCase));
+            if (exact != null) return exact.Name;
+
+            // 3) Heuristics by contains
+            if (primaryKey.Contains("customer", StringComparison.OrdinalIgnoreCase))
+            {
+                var guess = lists.Values.FirstOrDefault(v => v.Name.Contains("Customer", StringComparison.OrdinalIgnoreCase));
+                if (guess != null) return guess.Name;
+            }
+            if (primaryKey.Contains("phase", StringComparison.OrdinalIgnoreCase))
+            {
+                var guess = lists.Values.FirstOrDefault(v => v.Name.Contains("Phase", StringComparison.OrdinalIgnoreCase));
+                if (guess != null) return guess.Name;
+            }
+            if (primaryKey.Contains("tracker", StringComparison.OrdinalIgnoreCase))
+            {
+                var guess = lists.Values.FirstOrDefault(v => v.Name.Contains("Transition", StringComparison.OrdinalIgnoreCase) &&
+                                                             v.Name.Contains("Tracker", StringComparison.OrdinalIgnoreCase));
+                if (guess != null) return guess.Name;
+            }
+
+            // 4) Helpful error
+            throw new KeyNotFoundException(
+                $"List mapping not found for key '{primaryKey}'. Tried alternates: [{string.Join(", ", alternateKeys)}]. " +
+                $"Available keys: {string.Join(", ", lists.Keys)}");
+        }
+
+        // ===== GUID Related helpers =====
+
+        // Name-based GUID v5 (deterministic from a string)
+        private static Guid GuidV5(Guid ns, string name)
+        {
+            using var sha1 = SHA1.Create();
+            var nsBytes = ns.ToByteArray();
+            SwapByteOrder(nsBytes);
+            var nameBytes = Encoding.UTF8.GetBytes(name);
+            sha1.TransformBlock(nsBytes, 0, nsBytes.Length, null, 0);
+            sha1.TransformFinalBlock(nameBytes, 0, nameBytes.Length);
+            var hash = sha1.Hash!;
+
+            var newGuid = new byte[16];
+            Array.Copy(hash, 0, newGuid, 0, 16);
+            newGuid[6] = (byte)((newGuid[6] & 0x0F) | (5 << 4)); // version 5
+            newGuid[8] = (byte)((newGuid[8] & 0x3F) | 0x80);     // RFC 4122 variant
+            SwapByteOrder(newGuid);
+            return new Guid(newGuid);
+        }
+        private static void SwapByteOrder(byte[] guid)
+        {
+            void Swap(int a, int b) { var t = guid[a]; guid[a] = guid[b]; guid[b] = t; }
+            Swap(0, 3); Swap(1, 2); Swap(4, 5); Swap(6, 7);
+        }
+
+        // Namespace for service (can be any constant Guid)
+        private static readonly Guid Namespace_ConfluenceSyncService =
+            new Guid("723049de-0ae9-49db-9a87-4d68e096abbd");
+
+        // Try to backfill CustomerId on the tracker item and return it, or null if we can’t.
+        private async Task<string?> TryBackfillCustomerIdAsync(
+            string siteId,
+            string trackerListName,
+            string customersListName,
+            SharePointListItem trackerItem,
+            CancellationToken ct)
+        {
+            // Resolve tracker fields
+            var fTitle = GetSharePointFieldName("Title", "TransitionTracker");
+            var fCustomerId = GetSharePointFieldName("CustomerId", "TransitionTracker");
+            var fCustomerWiki = GetSharePointFieldName("CustomerWiki", "TransitionTracker");
+            var fConfluenceId = GetSharePointFieldName("ConfluencePageId", "TransitionTracker");
+            var title = trackerItem.Fields.TryGetValue(fTitle, out var t) ? t?.ToString() ?? "" : "";
+            var wiki = trackerItem.Fields.TryGetValue(fCustomerWiki, out var w) ? w?.ToString() ?? "" : "";
+            var pageId = trackerItem.Fields.TryGetValue(fConfluenceId, out var pid) ? pid?.ToString() ?? "" : "";
+
+            // 1) If a TransitionCustomers row already exists for this name/wiki, reuse its CustomerId
+            var fCust_CustomerId = MapField("TransitionCustomers", "CustomerId");
+            var fCust_Name = MapField("TransitionCustomers", "Customer");     // display name/title
+            var customers = await _sharePointClient.GetAllListItemsAsync(siteId, customersListName);
+            var match = customers.FirstOrDefault(i =>
+            {
+                var nameMatches = i.Fields.TryGetValue(fCust_Name, out var nm)
+                                  && string.Equals(nm?.ToString() ?? "", title, StringComparison.OrdinalIgnoreCase);
+                if (nameMatches) return true;
+                // If you keep the wiki URL in TransitionCustomers, add a mapping and check it here.
+                return false;
+            });
+            if (match != null && match.Fields.TryGetValue(fCust_CustomerId, out var existingIdObj))
+            {
+                var existingId = existingIdObj?.ToString();
+                if (!string.IsNullOrWhiteSpace(existingId))
+                {
+                    await _sharePointClient.UpdateListItemAsync(siteId, trackerListName, trackerItem.Id,
+                        new Dictionary<string, object> { [fCustomerId] = existingId });
+                    _logger.Information("tracker.backfill customerId (reuse) item={itemId} id={id}", trackerItem.Id, existingId);
+                    return existingId;
+                }
+            }
+
+            // 2) Otherwise generate a deterministic GUID v5 from best available key
+            var key = !string.IsNullOrWhiteSpace(wiki) ? $"wiki:{wiki}"
+                    : !string.IsNullOrWhiteSpace(pageId) ? $"page:{pageId}"
+                    : $"name:{title}";
+            var newGuid = GuidV5(Namespace_ConfluenceSyncService, key).ToString();
+
+            // Write back to tracker
+            await _sharePointClient.UpdateListItemAsync(siteId, trackerListName, trackerItem.Id,
+                new Dictionary<string, object> { [fCustomerId] = newGuid });
+            _logger.Information("tracker.backfill customerId (generated) item={itemId} id={id} from={key}", trackerItem.Id, newGuid, key);
+            return newGuid;
+        }
+
+
+
+        // ===== NEW small helpers for Step 5 =====
+        private static DateTimeOffset? TryParseDate(object? val)
+        {
+            if (val is null) return null;
+            if (val is DateTime dt) return new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc));
+            if (val is string s && DateTimeOffset.TryParse(s, out var dto)) return dto.ToUniversalTime();
+            return null;
+        }
+
+        private static string NameFromWikiOrTitle(object? wikiFieldValue, string title)
+        {
+            if (wikiFieldValue is null) return title;
+            var s = wikiFieldValue.ToString();
+            if (string.IsNullOrWhiteSpace(s)) return title;
+            return Uri.IsWellFormedUriString(s, UriKind.Absolute) ? title : s;
+        }
+
+        private async Task<string> GetOrCreatePhaseIdAsync(
+            string siteId, string phaseTasksListName, string customerId, string phaseName, DateTimeOffset? goLive, CancellationToken ct)
+        {
+            // Pull all phase tasks for MVP, filter in-process
+            var all = await _sharePointClient.GetAllListItemsAsync(siteId, phaseTasksListName);
+
+            var fCustomerId = MapField("Phase Tasks & Metadata", "CustomerId");
+            var fPhaseName = MapField("Phase Tasks & Metadata", "PhaseName");
+            var fPhaseId = MapField("Phase Tasks & Metadata", "PhaseID");
+            var fGoLive = MapField("Phase Tasks & Metadata", "GoLiveDate");
+
+            foreach (var it in all)
+            {
+                if (!it.Fields.TryGetValue(fCustomerId, out var cid) || (cid?.ToString() ?? "") != customerId) continue;
+                if (!it.Fields.TryGetValue(fPhaseName, out var pn) || !string.Equals(pn?.ToString(), phaseName, StringComparison.OrdinalIgnoreCase)) continue;
+
+                var existingGoLive = TryParseDate(it.Fields.TryGetValue(fGoLive, out var gl) ? gl : null);
+                if (SameDate(existingGoLive, goLive))
+                {
+                    if (it.Fields.TryGetValue(fPhaseId, out var pid) && !string.IsNullOrWhiteSpace(pid?.ToString()))
+                        return pid!.ToString()!;
+                }
+            }
+
+            // Not found: new GUID
+            return Guid.NewGuid().ToString();
+        }
+
+
+        private string MapField(string section, string logical)
+        {
+            var s = _configuration.GetSection($"SharePointFieldMappings:{section}");
+            return string.IsNullOrWhiteSpace(s[logical]) ? logical : s[logical]!;
+        }
+
+        private static string Sha1(string input)
+        {
+            using var sha = SHA1.Create();
+            var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
+            var sb = new StringBuilder(bytes.Length * 2);
+            foreach (var b in bytes) sb.Append(b.ToString("x2"));
+            return sb.ToString();
+        }
+
+        private static bool SameDate(DateTimeOffset? a, DateTimeOffset? b)
+        {
+            if (a is null || b is null) return false;
+            return a.Value.UtcDateTime.Date == b.Value.UtcDateTime.Date;
         }
 
         #endregion

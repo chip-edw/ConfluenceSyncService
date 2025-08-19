@@ -52,13 +52,13 @@ namespace ConfluenceSyncService
 
             //######################  Various utilities  ##########################
 
-            using var scope = _serviceScopeFactory.CreateScope();
-            var workerUtilities = new WorkerUtilities(_serviceScopeFactory);
+            //using var scope = _serviceScopeFactory.CreateScope();
+            //var workerUtilities = new WorkerUtilities(_serviceScopeFactory);
 
             ////Validation: Get the SharePoint List actual Field Values
             //await workerUtilities.ListSharePointFieldNamesAsync(
             //    "v7n2m.sharepoint.com,d1ee4683-057e-41c1-abe8-8b7fcf24a609,37b9c1e6-3b8e-4e8e-981b-67291632e4c3",
-            //    "TransitionCustomers");
+            //    "Phase Tasks & Metadata");
             //Console.WriteLine("");
 
             ////Validation: Discover Teams resources

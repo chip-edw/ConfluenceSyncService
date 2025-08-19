@@ -7,6 +7,7 @@ using ConfluenceSyncService.Services;
 using ConfluenceSyncService.Services.Clients;
 using ConfluenceSyncService.Services.Maintenance;
 using ConfluenceSyncService.Services.Secrets;
+using ConfluenceSyncService.Services.State;
 using ConfluenceSyncService.Services.Sync;
 using ConfluenceSyncService.Services.Workflow;
 using Microsoft.EntityFrameworkCore;
@@ -80,6 +81,10 @@ namespace ConfluenceSyncService.Extensions
                     var secretsProvider = provider.GetRequiredService<ISecretsProvider>();
                     return new ConfluenceClient(httpClient, configuration, secretsProvider);
                 });
+
+            services.AddSingleton<ICursorStore, FileCursorStore>();
+
+
             #endregion
 
             #region Entity Framework / DB
