@@ -2,7 +2,8 @@
 
 ## Overview
 
-This document details the bidirectional synchronization architecture between SharePoint Lists and Confluence Tables, including sync triggers, field mapping, and change detection mechanisms.
+This document details the bidirectional synchronization architecture between SharePoint Lists and Confluence Tables, including sync triggers, field mapping, and change detection mechanisms.  
+It also documents the **phase-based workflow orchestration** that controls task notifications and human acknowledgements. Timezone for workflow date calculations is **America/Chicago**.
 
 ## Sync Flow Architecture
 
@@ -20,6 +21,47 @@ This document details the bidirectional synchronization architecture between Sha
 │  Tracking       │    │    Database      │    │   Tracking      │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
 ```
+
+## Workflow Orchestration (Phase / Category / Parallelism)
+
+**Definitions**
+- **AnchorDateType**: which anchor to use for offsets (e.g., `GoLiveDate` or `SupportGoLiveDate`).
+- **StartOffsetDays**: business-day offset from the selected anchor.
+- **TaskCategory**: a logical grouping that must complete before the next category can begin.
+- **Parallel Tasks**: tasks that share the same `(TaskCategory, AnchorDateType, StartOffsetDays)`.
+
+**Core Rule (current design)**  
+Within a given **Phase**, the engine progresses **category by category**. Inside a category, it advances **group by group**, where a **group** is defined by:
+```
+(TaskCategory, AnchorDateType, StartOffsetDays)
+```
+- All tasks in the **current group** can be worked **in parallel**.
+- The **next group** in the same category is **not eligible** until **all tasks** in the current group are `Completed`.
+- The **next TaskCategory** is **not eligible** until the **current TaskCategory** is fully completed.
+- A group is **eligible to notify** when:
+  ```
+  AnchorDate(GoLiveDate or SupportGoLiveDate) + StartOffsetDays <= now (America/Chicago)
+  ```
+
+**Idempotency**
+- Human ACKs are double-click safe.
+- Notification stamps prevent duplicate sends for the same task instance.
+
+## Current Implementation Snapshot
+
+- **Mapping loader**: `mapping.transition.json` via `WorkflowMappingProvider`. Keys:  
+  `transitionTracker`, `transitionCustomers`, `phaseTasks`, `transitionResources`.
+- **Cursor store**: `%LOCALAPPDATA%/ConfluenceSyncService/cursors.json`  
+  Key: `Cursor:TransitionTracker:lastModifiedUtc`.
+- **Step 5 (deltas)**: Read Transition Tracker via `siteId + GetAllListItemsAsync`, filter `LastModifiedUtc > cursor`.
+- **Step 6 (per item)**:
+  - Backfill **CustomerId** on Transition Tracker (reuse from `TransitionCustomers` by name; else deterministic GUID v5). **Read-after-write** verifies; if it fails, **cursor does not advance**.
+  - Upsert **TransitionCustomers** (`CustomerId`, `Customer/Title`, `Region`, `ActivePhaseID`).
+  - Upsert **Phase Tasks & Metadata** rows keyed by  
+    `CorrelationId = sha1(CustomerId|PhaseId|WorkflowId|ActivityKey)`, default `Status="NotStarted"`.
+  - Advance cursor to the **max processed LastModifiedUtc only when no blockers**.
+
+> **SharePoint writes**: always use `SharePointFieldMappings` internal names; **never** write read-only/view fields (e.g., `LinkTitle`, `Modified`).
 
 ## Sync Triggers
 
@@ -345,6 +387,28 @@ catch (Exception ex)
   }
 }
 ```
+
+### Notification Additions (MVP)
+
+```json
+{
+  "PublicBaseUrl": "https://<public-host>",
+  "Notifications": {
+    "MarkCompleteLinkTtlMinutes": 120,
+    "DefaultFallbackEmail": "me@example.com"
+  }
+}
+```
+
+## Notifications & Action Links (MVP)
+
+- **Signed action links** via `SignatureService` with TTL.  
+- **Management API** ACK endpoint verifies signature/expiry, idempotently sets:
+  - `Status = "Completed"`, `CompletedDate = UtcNow`, optional `AckedBy`.
+- **Teams notifications**:
+  - Resolve assignee from **Transition Resources** by `Role + Region`, else use `Notifications.DefaultFallbackEmail`.
+  - Send channel message containing a “Mark complete” link.
+- **Auto-advance** (optional): when the last task in the current group completes, notify the next eligible group. When the category completes, the next category becomes eligible.
 
 ## Debugging and Monitoring
 
