@@ -1,5 +1,6 @@
 using Asp.Versioning;
 using ConfluenceSyncService.Common.Secrets;
+using ConfluenceSyncService.Endpoints; // AckActionHandler type lives here (endpoint handler)
 using ConfluenceSyncService.Extensions;
 using ConfluenceSyncService.Services.State;
 using ConfluenceSyncService.Services.Workflow;
@@ -39,7 +40,7 @@ namespace ConfluenceSyncService
 
                 // Order matters
                 builder.Services.AddAppSecrets(builder.Configuration);
-                builder.Services.AddAppServices();
+                builder.Services.AddAppServices(builder.Configuration);
 
                 builder.Services.AddControllers();
                 builder.Services.AddApiVersioning(options =>
@@ -154,6 +155,11 @@ namespace ConfluenceSyncService
 
             // Sanity check endpoint
             app.MapGet("/ping", () => Results.Ok(new { ok = true, t = DateTimeOffset.UtcNow }));
+
+            // NEW: GET /maintenance/actions/mark-complete (HMAC-verified, idempotent)
+            app.MapGet("/maintenance/actions/mark-complete",
+                async (HttpContext ctx, AckActionHandler handler, CancellationToken ct)
+                    => await handler.HandleAsync(ctx, ct));
         }
 
         private static void AttachGlobalHandlers()

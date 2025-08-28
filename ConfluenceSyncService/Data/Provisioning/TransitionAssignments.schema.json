@@ -1,0 +1,103 @@
+{
+    "$schema": "https://developer.microsoft.com/json-schemas/sp/v2/column-formatting.schema.json",
+    "ListName": "Transition Assignments",
+    "Fields": [
+        {
+            "DisplayName": "Title",
+            "InternalName": "Title",
+            "Type": "Text"
+        },
+        {
+            "DisplayName": "TaskName",
+            "InternalName": "TaskName",
+            "Type": "Text"
+        },
+        {
+            "DisplayName": "Status",
+            "InternalName": "Status",
+            "Type": "Choice",
+            "Choices": [ "Pending", "In Progress", "Completed" ]
+        },
+        {
+            "DisplayName": "CorrelationId",
+            "InternalName": "CorrelationId",
+            "Type": "Text"
+        },
+        {
+            "DisplayName": "Region",
+            "InternalName": "Region",
+            "Type": "Text"
+        },
+        {
+            "DisplayName": "AssignedRole",
+            "InternalName": "AssignedRole",
+            "Type": "Choice",
+            "Choices": [ "Project PM", "Project Functional", "Project Technical", "Support PM", "Support Functional", "Support Technical" ]
+        },
+        {
+            "DisplayName": "AssignedToAadUserId",
+            "InternalName": "AssignedToAadUserId",
+            "Type": "Text"
+        },
+        {
+            "DisplayName": "AssignedToEmail",
+            "InternalName": "AssignedToEmail",
+            "Type": "Text"
+        },
+        {
+            "DisplayName": "AnchorDateUtc",
+            "InternalName": "AnchorDateUtc",
+            "Type": "DateTime"
+        },
+        {
+            "DisplayName": "StartOffsetBusinessDays",
+            "InternalName": "StartOffsetBusinessDays",
+            "Type": "Number"
+        },
+        {
+            "DisplayName": "DurationBusinessDays",
+            "InternalName": "DurationBusinessDays",
+            "Type": "Number"
+        },
+        {
+            "DisplayName": "DueDateUtc",
+            "InternalName": "DueDateUtc",
+            "Type": "DateTime"
+        },
+        {
+            "DisplayName": "NotifiedAtUtc",
+            "InternalName": "NotifiedAtUtc",
+            "Type": "DateTime"
+        },
+        {
+            "DisplayName": "ChaseCount",
+            "InternalName": "ChaseCount",
+            "Type": "Number"
+        },
+        {
+            "DisplayName": "NextChaseAtUtc",
+            "InternalName": "NextChaseAtUtc",
+            "Type": "DateTime"
+        },
+        {
+            "DisplayName": "Important",
+            "InternalName": "Important",
+            "Type": "Boolean"
+        },
+        {
+            "DisplayName": "AckedBy",
+            "InternalName": "AckedBy",
+            "Type": "Text"
+        },
+        {
+            "DisplayName": "AckedByActual",
+            "InternalName": "AckedByActual",
+            "Type": "Text"
+        },
+        {
+            "DisplayName": "CompletedDate",
+            "InternalName": "CompletedDate",
+            "Type": "DateTime"
+        }
+    ]
+}
