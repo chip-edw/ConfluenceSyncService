@@ -127,9 +127,25 @@ namespace ConfluenceSyncService.Extensions
             #endregion
 
             #region Entity Framework / DB
-            services.AddDbContext<ApplicationDbContext>(options =>
-                options.UseSqlite("Data Source=ConfluenceSyncServiceDB.db"), ServiceLifetime.Scoped);
+            services.AddDbContext<ApplicationDbContext>((sp, options) =>
+            {
+                var config = sp.GetRequiredService<IConfiguration>();
+                var env = sp.GetRequiredService<IHostEnvironment>();
+
+                // 1) Try appsettings/ENV: ConnectionStrings__DefaultConnection
+                var cs = config.GetConnectionString("DefaultConnection");
+
+                // 2) Fallback to the packaged DB under ./DB if nothing was provided
+                if (string.IsNullOrWhiteSpace(cs))
+                {
+                    var fallbackPath = Path.Combine(env.ContentRootPath, "DB", "ConfluenceSyncServiceDB.db");
+                    cs = $"Data Source={fallbackPath};Cache=Shared";
+                }
+
+                options.UseSqlite(cs);
+            });
             #endregion
+
 
             #region Worker and Hosted Services
             // Register Worker for management API access either way

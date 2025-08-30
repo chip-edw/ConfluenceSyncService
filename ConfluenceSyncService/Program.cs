@@ -62,6 +62,17 @@ namespace ConfluenceSyncService
 
                 // Order matters
                 builder.Services.AddAppSecrets(builder.Configuration);
+
+                // Ensure EF uses the same DB as State:DbPath when no DefaultConnection is set
+                var cs = builder.Configuration.GetConnectionString("DefaultConnection");
+                if (string.IsNullOrWhiteSpace(cs))
+                {
+                    var p = builder.Configuration["State:DbPath"] ?? "DB/ConfluenceSyncServiceDB.db";
+                    if (!Path.IsPathRooted(p)) p = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, p.Replace('/', Path.DirectorySeparatorChar)));
+                    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:DefaultConnection"] = $"Data Source={p};Cache=Shared" });
+                }
+
+
                 builder.Services.AddAppServices(builder.Configuration); // This may register hosted services.
 
                 // In ACK-only mode, strip project-hosted background services so no sync runs.
@@ -108,6 +119,62 @@ namespace ConfluenceSyncService
                 }
 
                 var app = builder.Build();
+
+                // === One-time SQLite DB self-seed to persistent storage =====================
+                try
+                {
+                    var liveDbPath = app.Configuration["State:DbPath"]; // expects /home/site/data/ConfluenceSyncService/ConfluenceSyncServiceDB.db on App Service
+                    if (string.IsNullOrWhiteSpace(liveDbPath))
+                    {
+                        Log.Warning("State:DbPath is not configured; skipping SQLite DB seed.");
+                    }
+                    else
+                    {
+                        var liveDir = Path.GetDirectoryName(liveDbPath);
+                        if (!File.Exists(liveDbPath))
+                        {
+                            // Seed from the packaged DB under content root: /home/site/wwwroot/DB/ConfluenceSyncServiceDB.db
+                            var seedPath = Path.Combine(app.Environment.ContentRootPath, "DB", "ConfluenceSyncServiceDB.db");
+
+                            if (!string.IsNullOrEmpty(liveDir))
+                            {
+                                Directory.CreateDirectory(liveDir);
+                            }
+
+                            if (File.Exists(seedPath))
+                            {
+                                File.Copy(seedPath, liveDbPath, overwrite: false);
+                                Log.Information("Seeded SQLite DB to {LiveDbPath} from {SeedPath}", liveDbPath, seedPath);
+                            }
+                            else
+                            {
+                                Log.Warning("Seed SQLite DB skipped: packaged seed not found at {SeedPath}. Live path: {LiveDbPath}", seedPath, liveDbPath);
+                            }
+                        }
+                        else
+                        {
+                            Log.Information("SQLite DB present at {LiveDbPath}; seed skipped.", liveDbPath);
+                        }
+                    }
+                }
+                catch (IOException ioex)
+                {
+                    // If another instance raced the write, treat as success if the file now exists.
+                    var liveDbPathNow = app.Configuration["State:DbPath"];
+                    if (!string.IsNullOrWhiteSpace(liveDbPathNow) && File.Exists(liveDbPathNow))
+                    {
+                        Log.Information("SQLite DB already present at {LiveDbPath}; concurrent seed likely occurred. Proceeding.", liveDbPathNow);
+                    }
+                    else
+                    {
+                        Log.Error(ioex, "Failed during SQLite DB self-seed.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Unexpected error during SQLite DB self-seed.");
+                }
+                // ============================================================================
 
                 using (var scope = app.Services.CreateScope())
                 {
@@ -243,8 +310,6 @@ namespace ConfluenceSyncService
             );
 #endif
         }
-
-
 
         private static void AttachGlobalHandlers()
         {
