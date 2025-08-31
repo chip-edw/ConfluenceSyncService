@@ -1,4 +1,4 @@
-﻿using ConfluenceSyncService.Interfaces;
+using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.Services.Clients;
 using ConfluenceSyncService.Services.State;
@@ -19,6 +19,8 @@ namespace ConfluenceSyncService.Services.Sync
         private readonly ICursorStore _cursorStore;
         private readonly IWorkflowMappingProvider _mappingProvider;
         private readonly Serilog.ILogger _logger;
+        private readonly ITaskIdIssuer _taskIdIssuer;
+
 
         public SyncOrchestratorService(
             SharePointClient sharePointClient,
@@ -26,7 +28,8 @@ namespace ConfluenceSyncService.Services.Sync
             ApplicationDbContext dbContext,
             IConfiguration configuration,
             ICursorStore cursorStore,
-            IWorkflowMappingProvider mappingProvider)
+            IWorkflowMappingProvider mappingProvider,
+            ITaskIdIssuer taskIdIssuer)
         {
             _sharePointClient = sharePointClient;
             _confluenceClient = confluenceClient;
@@ -34,6 +37,7 @@ namespace ConfluenceSyncService.Services.Sync
             _configuration = configuration;
             _cursorStore = cursorStore;
             _mappingProvider = mappingProvider;
+            _taskIdIssuer = taskIdIssuer;
             _logger = Log.ForContext<SyncOrchestratorService>();
         }
 
@@ -563,6 +567,7 @@ namespace ConfluenceSyncService.Services.Sync
             var fPhaseId = MapField("Phase Tasks & Metadata", "PhaseID");
             var fPhaseName = MapField("Phase Tasks & Metadata", "PhaseName");
             var fTaskName = MapField("Phase Tasks & Metadata", "TaskName");
+            var fTaskId = MapField("Phase Tasks & Metadata", "TaskId");
             var fTaskCategory = MapField("Phase Tasks & Metadata", "TaskCategory");
             var fRole = MapField("Phase Tasks & Metadata", "Role");
             var fAnchorType = MapField("Phase Tasks & Metadata", "AnchorDateType");
@@ -618,24 +623,39 @@ namespace ConfluenceSyncService.Services.Sync
                 {
                     fields[fStatus] = "Not Started";
 
-                    // ################  Chagge to Debug log level before going to production
+                    // Reserve a TaskId locally and stamp it into the SP fields
+                    var taskId = await _taskIdIssuer.ReserveAsync(
+                        listKey: "PhaseTasks",
+                        correlationId: correlation,
+                        customerId: customerId,
+                        phaseName: phaseName,
+                        taskName: a.TaskName,
+                        workflowId: workflowId,
+                        ct: ct);
+
+                    fields[fTaskId] = taskId;
+
                     _logger.Information("=== ATTEMPTING TO CREATE SHAREPOINT ITEM ===");
                     _logger.Information("Site ID: {SiteId}", siteId);
                     _logger.Information("List Name: {ListName}", phaseTasksListName);
                     _logger.Information("Activity: {ActivityKey} - {TaskName}", a.Key, a.TaskName);
 
                     _logger.Information("Fields being sent ({Count} total):", fields.Count);
-
                     foreach (var field in fields)
                     {
                         var valueInfo = field.Value == null ? "null" :
-                                       $"'{field.Value}' (Type: {field.Value.GetType().Name})";
+                                        $"'{field.Value}' (Type: {field.Value.GetType().Name})";
                         _logger.Information("  {FieldName} = {Value}", field.Key, valueInfo);
                     }
 
                     var id = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
+
+                    // Link the reserved TaskId to the created SharePoint item id
+                    await _taskIdIssuer.LinkToSharePointAsync(taskId, id, ct);
+
                     _logger.Information("task.upsert {correlation} created {task} with ID {id}", correlation, a.TaskName, id);
                 }
+
                 else
                 {
                     // Update descriptive/anchor fields only; do not touch stamps/status fields

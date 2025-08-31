@@ -74,6 +74,8 @@ namespace ConfluenceSyncService.Extensions
             services.AddSingleton<IWorkflowMappingProvider, WorkflowMappingProvider>();
             services.AddScoped<ISyncOrchestratorService, SyncOrchestratorService>();
 
+            services.AddSingleton<ITaskIdIssuer, SqliteTaskIdIssuer>();
+
             // SignatureService: inject base64 key once via DI
             services.AddSingleton<SignatureService>(sp =>
             {

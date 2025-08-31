@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Serilog;
 namespace ConfluenceSyncService.Models
 {
@@ -12,6 +12,8 @@ namespace ConfluenceSyncService.Models
         public DbSet<ConfigStore> ConfigStore { get; set; }
         public DbSet<TableSyncState> TableSyncStates { get; set; }
         public DbSet<SyncState> SyncStates { get; set; }
+        public DbSet<TaskIdMap> TaskIdMaps => Set<TaskIdMap>();
+
 
 
         public override int SaveChanges()
@@ -113,6 +115,31 @@ namespace ConfluenceSyncService.Models
                 entity.Property(e => e.CustomerName).IsRequired();
                 entity.HasIndex(e => e.ConfluencePageId).IsUnique();
             });
+
+            modelBuilder.Entity<TaskIdMap>(entity =>
+            {
+                entity.ToTable("TaskIdMap");
+                entity.HasKey(e => e.TaskId);
+
+                entity.Property(e => e.TaskId)
+                      .ValueGeneratedOnAdd(); // AUTOINCREMENT on SQLite
+
+                entity.Property(e => e.ListKey).HasDefaultValue("PhaseTasks");
+                entity.Property(e => e.State).HasDefaultValue("reserved");
+                entity.Property(e => e.CreatedUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
+                entity.Property(e => e.AckVersion).HasDefaultValue(1);
+
+                // Unique SpItemId, SQLite allows multiple NULLs
+                entity.HasIndex(e => e.SpItemId).IsUnique();
+
+                entity.HasIndex(e => e.CorrelationId);
+
+                entity.HasIndex(e => new { e.CustomerId, e.PhaseName, e.TaskName, e.WorkflowId });
+
+                // Helpful for channel lookups if needed later
+                entity.HasIndex(e => new { e.TeamId, e.ChannelId });
+            });
+
         }
         #endregion
 
