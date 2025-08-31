@@ -19,6 +19,7 @@ using ConfluenceSyncService.SharePoint;
 using ConfluenceSyncService.Teams;
 using ConfluenceSyncService.Time;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.Identity.Client;
 
 namespace ConfluenceSyncService.Extensions
@@ -27,16 +28,22 @@ namespace ConfluenceSyncService.Extensions
     {
         public static IServiceCollection AddAppServices(this IServiceCollection services, IConfiguration config)
         {
-            // Tiny-app switch: when true, we host only endpoints (ACK/ping), no background workers.
+            // Tiny-app switch: when true, only endpoints (ACK/ping), no background workers.
             var ackOnly = config.GetValue<bool>("Hosting:AckOnly");
 
             #region Core Configuration
+            // Default client for anything not using the named ones
             services.AddHttpClient();
 
-            // Named Graph client (used by notifier/chaser)
-            services.AddHttpClient("graph", c =>
+            // Named HttpClient for Microsoft Graph. BaseUrl can be set via:
+            //   appsettings:  "Graph": { "BaseUrl": "https://graph.microsoft.com/" }
+            //   env var:      Graph__BaseUrl = https://graph.microsoft.com/
+            services.AddHttpClient("graph", (sp, c) =>
             {
-                c.BaseAddress = new Uri("https://graph.microsoft.com");
+                var cfg = sp.GetRequiredService<IConfiguration>();
+                var baseUrl = cfg["Graph:BaseUrl"] ?? "https://graph.microsoft.com/";
+                if (!baseUrl.EndsWith("/")) baseUrl += "/";
+                c.BaseAddress = new Uri(baseUrl, UriKind.Absolute);
             });
             #endregion
 
@@ -57,7 +64,7 @@ namespace ConfluenceSyncService.Extensions
             services.AddSingleton<ConfluenceSyncService.Security.IHmacSigner,
                                   ConfluenceSyncService.Security.SecretsBackedHmacSigner>();
 
-            // App-only Graph token provider for Teams + chaser (reuses existing MSAL wrapper)
+            // App-only Graph token provider for Teams + chaser
             services.AddSingleton<ConfluenceSyncService.Teams.IGraphTokenProvider,
                                   ConfluenceSyncService.MSGraphAPI.GraphTokenProvider>();
             #endregion
@@ -67,11 +74,10 @@ namespace ConfluenceSyncService.Extensions
             services.AddSingleton<IWorkflowMappingProvider, WorkflowMappingProvider>();
             services.AddScoped<ISyncOrchestratorService, SyncOrchestratorService>();
 
-            // SignatureService: inject base64 key once via DI (existing)
+            // SignatureService: inject base64 key once via DI
             services.AddSingleton<SignatureService>(sp =>
             {
                 var secrets = sp.GetRequiredService<ISecretsProvider>();
-                // Secrets must already be initialized by the hosted initializer below (in full mode)
                 var b64 = secrets.GetApiKeyAsync(SecretsKeys.LinkSigningKey)
                                  .GetAwaiter().GetResult();
 
@@ -86,10 +92,10 @@ namespace ConfluenceSyncService.Extensions
             services.AddSingleton<IRegionDueCalculator, RegionDueCalculator>();
             services.AddSingleton<ISignedLinkGenerator, SignedLinkGenerator>();
 
-            // SharePoint/Teams/Email clients (existing)
+            // SharePoint/Teams/Email clients now use the named "graph" HttpClient so relative paths resolve correctly
             services.AddTransient<SharePointClient>(provider =>
             {
-                var httpClient = provider.GetRequiredService<IHttpClientFactory>().CreateClient();
+                var httpClient = provider.GetRequiredService<IHttpClientFactory>().CreateClient("graph");
                 var confidentialClient = provider.GetRequiredService<ConfidentialClientApp>();
                 var configuration = provider.GetRequiredService<IConfiguration>();
                 return new SharePointClient(httpClient, confidentialClient, configuration);
@@ -97,7 +103,7 @@ namespace ConfluenceSyncService.Extensions
 
             services.AddTransient<TeamsClient>(provider =>
             {
-                var httpClient = provider.GetRequiredService<IHttpClientFactory>().CreateClient();
+                var httpClient = provider.GetRequiredService<IHttpClientFactory>().CreateClient("graph");
                 var confidentialClient = provider.GetRequiredService<ConfidentialClientApp>();
                 var configuration = provider.GetRequiredService<IConfiguration>();
                 return new TeamsClient(httpClient, confidentialClient, configuration);
@@ -105,16 +111,30 @@ namespace ConfluenceSyncService.Extensions
 
             services.AddTransient<EmailClient>(provider =>
             {
-                var httpClient = provider.GetRequiredService<IHttpClientFactory>().CreateClient();
+                var httpClient = provider.GetRequiredService<IHttpClientFactory>().CreateClient("graph");
                 var confidentialClient = provider.GetRequiredService<ConfidentialClientApp>();
                 var configuration = provider.GetRequiredService<IConfiguration>();
                 return new EmailClient(httpClient, confidentialClient, configuration);
             });
 
-            // Light wrappers used by ACK/chaser/notifications (keep existing Clients intact)
-            services.AddSingleton<ISharePointTaskUpdater, SharePointTaskUpdater>();
+            // FIXED: Register SharePointTaskUpdater to use the "graph" named HttpClient with authentication
+            services.AddTransient<SharePointTaskUpdater>(provider =>
+            {
+                var httpClient = provider.GetRequiredService<IHttpClientFactory>().CreateClient("graph");
+                var fieldMappingOptions = provider.GetRequiredService<IOptions<SharePointFieldMappingsOptions>>();
+                var confidentialClientApp = provider.GetRequiredService<ConfidentialClientApp>();
+                var configuration = provider.GetRequiredService<IConfiguration>();
+                return new SharePointTaskUpdater(httpClient, fieldMappingOptions, confidentialClientApp, configuration);
+            });
+
+            // Map the interface to the same instance
+            services.AddTransient<ISharePointTaskUpdater>(provider =>
+                provider.GetRequiredService<SharePointTaskUpdater>());
+
+            // Notifications
             services.AddSingleton<INotificationService, TeamsNotificationService>();
 
+            // Confluence REST client (unchanged)
             services.AddHttpClient<ConfluenceClient>()
                 .AddTypedClient((httpClient, provider) =>
                 {
@@ -129,11 +149,11 @@ namespace ConfluenceSyncService.Extensions
             #region Entity Framework / DB
             services.AddDbContext<ApplicationDbContext>((sp, options) =>
             {
-                var config = sp.GetRequiredService<IConfiguration>();
+                var cfg = sp.GetRequiredService<IConfiguration>();
                 var env = sp.GetRequiredService<IHostEnvironment>();
 
                 // 1) Try appsettings/ENV: ConnectionStrings__DefaultConnection
-                var cs = config.GetConnectionString("DefaultConnection");
+                var cs = cfg.GetConnectionString("DefaultConnection");
 
                 // 2) Fallback to the packaged DB under ./DB if nothing was provided
                 if (string.IsNullOrWhiteSpace(cs))
@@ -146,7 +166,6 @@ namespace ConfluenceSyncService.Extensions
             });
             #endregion
 
-
             #region Worker and Hosted Services
             // Register Worker for management API access either way
             services.AddSingleton<Worker>();
@@ -158,6 +177,7 @@ namespace ConfluenceSyncService.Extensions
                 services.AddHostedService(provider => provider.GetRequiredService<Worker>());
                 services.AddHostedService<ChaserService>();
             }
+
             // ACK handler (for minimal API endpoint) — always available
             services.AddTransient<AckActionHandler>();
             #endregion
