@@ -36,8 +36,6 @@ namespace ConfluenceSyncService.Extensions
             services.AddHttpClient();
 
             // Named HttpClient for Microsoft Graph. BaseUrl can be set via:
-            //   appsettings:  "Graph": { "BaseUrl": "https://graph.microsoft.com/" }
-            //   env var:      Graph__BaseUrl = https://graph.microsoft.com/
             services.AddHttpClient("graph", (sp, c) =>
             {
                 var cfg = sp.GetRequiredService<IConfiguration>();
@@ -49,11 +47,24 @@ namespace ConfluenceSyncService.Extensions
 
             #region Options (binds)
             services.AddOptions<ClickerIdentityOptions>().BindConfiguration("Identity");
-            services.AddOptions<AckLinkOptions>().BindConfiguration("AckLink");
+
+            services.AddOptions<AckLinkOptions>()
+                .BindConfiguration("AckLink")
+                .Validate(o => o.Policy != null
+                            && o.Policy.InitialTtlCapHours > 0
+                            && o.Policy.ChaserTtlHours > 0,
+                          "AckLink.Policy invalid (cap/chaser TTLs must be > 0)")
+                .ValidateOnStart();
+
             services.AddOptions<RegionOffsetsOptions>().BindConfiguration("RegionOffsets");
             services.AddOptions<TeamsOptions>().BindConfiguration("Teams");
             services.AddOptions<ChaserOptions>().BindConfiguration("Chaser");
             services.AddOptions<SharePointFieldMappingsOptions>().BindConfiguration("SharePointFieldMappings");
+            #endregion
+
+            #region Options (configure)
+            services.Configure<AckLinkOptions>(config.GetSection("AckLink"));
+            services.Configure<TeamsOptions>(config.GetSection("Teams"));
             #endregion
 
             #region MS Graph Integration

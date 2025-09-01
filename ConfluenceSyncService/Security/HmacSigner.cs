@@ -1,6 +1,6 @@
+using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 using System.Text;
-using Microsoft.Extensions.Options;
 
 namespace ConfluenceSyncService.Security
 {
@@ -14,7 +14,8 @@ namespace ConfluenceSyncService.Security
     {
         public string SigningKey { get; set; } = ""; // base64 or raw
         public int GraceDays { get; set; } = 1;
-        public string BaseUrl { get; set; } = "https://localhost"; // host of this app for links. Use h ttps://localhost for dev
+        public string BaseUrl { get; set; } = "https://localhost"; // host of this app for links.
+        public AckLinkPolicy Policy { get; set; } = new();
     }
 
     public sealed class HmacSigner(IOptions<AckLinkOptions> opts) : IHmacSigner
@@ -43,6 +44,15 @@ namespace ConfluenceSyncService.Security
 
         private static string Base64UrlEncode(byte[] bytes)
             => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    public sealed class AckLinkPolicy
+    {
+        public int InitialTtlCapHours { get; set; } = 336;  // Default cap for pre-due TTL. Will be overwritten by appsettings.json policy.
+        public int CushionHours { get; set; } = 12;          // Default buffer added pre-due. Will be overwritten by appsettings.json policy.
+        public int ChaserTtlHours { get; set; } = 36;        // each chaser TTL. Will be overwritten by appsettings.json policy.
+        public bool RequireLatestLink { get; set; } = true;  // strict rotation. Will be overwritten by appsettings.json policy.
+        public int AllowedPreviousLinks { get; set; } = 0;   // soft rotation window. Will be overwritten by appsettings.json policy.
     }
 
 }
