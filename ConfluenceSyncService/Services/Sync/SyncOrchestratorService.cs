@@ -554,14 +554,23 @@ namespace ConfluenceSyncService.Services.Sync
             }
         }
 
-        private async Task UpsertPhaseTasksAsync(string siteId, string phaseTasksListName, string customerId, string customerName,
-            string phaseId, string phaseName, DateTimeOffset? goLive, DateTimeOffset? hypercareEnd,
-            IReadOnlyList<ActivitySpec> activities, string workflowId, CancellationToken ct)
+        private async Task UpsertPhaseTasksAsync(
+            string siteId,
+            string phaseTasksListName,
+            string customerId,
+            string customerName,
+            string phaseId,
+            string phaseName,
+            DateTimeOffset? goLive,
+            DateTimeOffset? hypercareEnd,
+            IReadOnlyList<ActivitySpec> activities,
+            string workflowId,
+            CancellationToken ct)
         {
-            // Load existing to check idempotency by CorrelationId
-            var existing = await _sharePointClient.GetAllListItemsAsync(siteId, phaseTasksListName);
-            var fCorrelation = MapField("Phase Tasks & Metadata", "CorrelationId");
+            var listKey = "PhaseTasks";
 
+            // Field mappings
+            var fCorrelation = MapField("Phase Tasks & Metadata", "CorrelationId");
             var fCustomerId = MapField("Phase Tasks & Metadata", "CustomerId");
             var fCustomer = MapField("Phase Tasks & Metadata", "Customer");
             var fPhaseId = MapField("Phase Tasks & Metadata", "PhaseID");
@@ -581,10 +590,7 @@ namespace ConfluenceSyncService.Services.Sync
             {
                 var correlation = Sha1($"{customerId}|{phaseId}|{workflowId}|{a.Key}");
 
-                // Find existing by correlation
-                var hit = existing.FirstOrDefault(i =>
-                    i.Fields.TryGetValue(fCorrelation, out var c) && (c?.ToString() ?? "") == correlation);
-
+                // Build the outgoing field set (anchor + descriptive only).
                 var fields = new Dictionary<string, object>
                 {
                     [fCorrelation] = correlation,
@@ -597,35 +603,112 @@ namespace ConfluenceSyncService.Services.Sync
                     [fRole] = a.DefaultRole,
                     [fAnchorType] = a.AnchorDateType,
                     [fStartOffset] = a.StartOffsetDays,
-                    [fDuration] = a.DurationBusinessDays,
-                    //[fGoLive] = goLive?.UtcDateTime,
-                    //[fHypercare] = hypercareEnd?.UtcDateTime
+                    [fDuration] = a.DurationBusinessDays
                 };
 
-                // Only add date fields if they have values
+                // Only add anchor dates when present, in ISO 8601 Z format at midnight
                 if (goLive.HasValue)
-                {
-                    // SharePoint expects ISO 8601 format
                     fields[fGoLive] = goLive.Value.ToString("yyyy-MM-ddT00:00:00Z");
-                }
                 if (hypercareEnd.HasValue)
-                {
-                    // SharePoint expects ISO 8601 format
                     fields[fHypercare] = hypercareEnd.Value.ToString("yyyy-MM-ddT00:00:00Z");
+
+                // Resolve mapping via local SQLite first
+                var map = await _dbContext.TaskIdMaps.AsNoTracking().FirstOrDefaultAsync(
+                    x => x.ListKey == listKey && x.CorrelationId == correlation && x.State == "linked", ct);
+
+                // Fallback: deterministic key (anchor-proof), newest first
+                ConfluenceSyncService.Models.TaskIdMap? detMap = null;
+                if (map is null)
+                {
+                    detMap = await _dbContext.TaskIdMaps.AsNoTracking()
+                        .Where(x => x.ListKey == listKey
+                                 && x.CustomerId == customerId
+                                 && x.PhaseName == phaseName
+                                 && x.TaskName == a.TaskName
+                                 && x.WorkflowId == workflowId)
+                        .OrderByDescending(x => x.CreatedUtc)
+                        .FirstOrDefaultAsync(ct);
                 }
 
-                // ################  Change to Debug log level before going to production
-                _logger.Information("Creating Phase Task item with {FieldCount} fields for correlation {Correlation}",
-                    fields.Count, correlation);
+                string? spItemId = map?.SpItemId ?? detMap?.SpItemId;
+                int? mappedId = map?.TaskId ?? detMap?.TaskId;
+                bool haveLinked = !string.IsNullOrEmpty(spItemId);
+                bool haveReserved = detMap is not null && detMap.State == "reserved" && string.IsNullOrEmpty(detMap.SpItemId);
+
+                // If fallback matched and correlation changed, refresh local mapping to new correlation for next runs
+                if (map is null && detMap is not null && detMap.CorrelationId != correlation && haveLinked)
+                {
+                    var tracked = await _dbContext.TaskIdMaps.FirstOrDefaultAsync(x => x.TaskId == detMap.TaskId, ct);
+                    if (tracked is not null)
+                    {
+                        tracked.CorrelationId = correlation;
+                        await _dbContext.SaveChangesAsync(ct);
+                        _logger.Information("task.map refresh correlation TaskId {TaskId}: {Old} -> {New}",
+                            detMap.TaskId, detMap.CorrelationId, correlation);
+                    }
+                }
+
+                // === Branch A: UPDATE existing item by id (no duplicates), skip if Completed ===
+                if (haveLinked)
+                {
+                    // Read current status to decide if we should skip reschedule
+                    var current = await _sharePointClient.GetListItemAsync(siteId, phaseTasksListName, spItemId!);
+                    string? curStatus = null;
+                    if (current.Fields != null && current.Fields.TryGetValue(fStatus, out var s) && s is not null)
+                        curStatus = s.ToString();
 
 
-                if (hit is null)
+                    if (string.Equals(curStatus, "Completed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.Information("task.upsert {Correlation} skip reschedule: already Completed (TaskId={TaskId}, ItemId={ItemId})",
+                            correlation, mappedId, spItemId);
+                        continue;
+                    }
+
+                    // Patch only anchor/descriptive fields
+                    var patch = new Dictionary<string, object?>();
+                    patch[fCorrelation] = correlation;
+                    patch[fAnchorType] = a.AnchorDateType;
+                    patch[fStartOffset] = a.StartOffsetDays;
+                    patch[fDuration] = a.DurationBusinessDays;
+                    patch[fTaskCategory] = a.TaskCategory;
+                    patch[fRole] = a.DefaultRole;
+
+                    if (goLive.HasValue) patch[fGoLive] = fields[fGoLive];
+                    if (hypercareEnd.HasValue) patch[fHypercare] = fields[fHypercare];
+
+                    await _sharePointClient.UpdateListItemAsync(siteId, phaseTasksListName, spItemId!, patch);
+                    _logger.Information("task.upsert {Correlation} updated anchor fields (TaskId={TaskId}, ItemId={ItemId})",
+                        correlation, mappedId, spItemId);
+
+                    continue;
+                }
+
+                // === Branch B: REUSE reserved TaskId (rare retry gap between reserve and link) ===
+                if (haveReserved && mappedId.HasValue)
+                {
+                    fields[fStatus] = "Not Started";
+                    fields[fTaskId] = mappedId.Value;
+
+                    _logger.Information("=== CREATE (reserved reuse) === Site:{SiteId} List:{List} Activity:{Key}-{Name} Correlation:{Correlation}",
+                        siteId, phaseTasksListName, a.Key, a.TaskName, correlation);
+
+                    var newId = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
+                    await _taskIdIssuer.LinkToSharePointAsync(mappedId.Value, newId, ct);
+
+                    _logger.Information("task.upsert {Correlation} created (reserved reuse) TaskId={TaskId}, ItemId={ItemId}",
+                        correlation, mappedId.Value, newId);
+
+                    continue;
+                }
+
+                // === Branch C: TRUE CREATE (no mapping exists) ===
                 {
                     fields[fStatus] = "Not Started";
 
                     // Reserve a TaskId locally and stamp it into the SP fields
                     var taskId = await _taskIdIssuer.ReserveAsync(
-                        listKey: "PhaseTasks",
+                        listKey: listKey,
                         correlationId: correlation,
                         customerId: customerId,
                         phaseName: phaseName,
@@ -635,32 +718,15 @@ namespace ConfluenceSyncService.Services.Sync
 
                     fields[fTaskId] = taskId;
 
-                    _logger.Information("=== ATTEMPTING TO CREATE SHAREPOINT ITEM ===");
-                    _logger.Information("Site ID: {SiteId}", siteId);
-                    _logger.Information("List Name: {ListName}", phaseTasksListName);
-                    _logger.Information("Activity: {ActivityKey} - {TaskName}", a.Key, a.TaskName);
-
-                    _logger.Information("Fields being sent ({Count} total):", fields.Count);
-                    foreach (var field in fields)
-                    {
-                        var valueInfo = field.Value == null ? "null" :
-                                        $"'{field.Value}' (Type: {field.Value.GetType().Name})";
-                        _logger.Information("  {FieldName} = {Value}", field.Key, valueInfo);
-                    }
+                    _logger.Information("=== CREATE === Site:{SiteId} List:{List} Activity:{Key}-{Name} Correlation:{Correlation}",
+                        siteId, phaseTasksListName, a.Key, a.TaskName, correlation);
 
                     var id = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
 
                     // Link the reserved TaskId to the created SharePoint item id
                     await _taskIdIssuer.LinkToSharePointAsync(taskId, id, ct);
 
-                    _logger.Information("task.upsert {correlation} created {task} with ID {id}", correlation, a.TaskName, id);
-                }
-
-                else
-                {
-                    // Update descriptive/anchor fields only; do not touch stamps/status fields
-                    await _sharePointClient.UpdateListItemAsync(siteId, phaseTasksListName, hit.Id, fields);
-                    _logger.Information("task.upsert {correlation} updated {task}", correlation, a.TaskName);
+                    _logger.Information("task.upsert {Correlation} created {Task} with ID {ItemId}", correlation, a.TaskName, id);
                 }
             }
         }
