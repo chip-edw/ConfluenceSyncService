@@ -7,7 +7,7 @@ using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Links;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
-using ConfluenceSyncService.Security;
+using ConfluenceSyncService.Options;
 using ConfluenceSyncService.Services;
 using ConfluenceSyncService.Services.Clients;
 using ConfluenceSyncService.Services.Maintenance;
@@ -21,6 +21,7 @@ using ConfluenceSyncService.Time;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Client;
+
 
 namespace ConfluenceSyncService.Extensions
 {
@@ -48,6 +49,7 @@ namespace ConfluenceSyncService.Extensions
             #region Options (binds)
             services.AddOptions<ClickerIdentityOptions>().BindConfiguration("Identity");
 
+            // Policy knobs for link behavior (lives in ConfluenceSyncService.Options)
             services.AddOptions<AckLinkOptions>()
                 .BindConfiguration("AckLink")
                 .Validate(o => o.Policy != null
@@ -56,16 +58,34 @@ namespace ConfluenceSyncService.Extensions
                           "AckLink.Policy invalid (cap/chaser TTLs must be > 0)")
                 .ValidateOnStart();
 
+            // Signer config (lives in ConfluenceSyncService.Security)
+            // Prefer "AckLink:Signer", but fall back to "AckLink" if you haven't split config yet.
+            var signerSection = config.GetSection("AckLink:Signer");
+            if (!signerSection.Exists()) signerSection = config.GetSection("AckLink");
+
+            services.AddOptions<ConfluenceSyncService.Security.AckSignerOptions>()
+                .Bind(signerSection)
+                .Validate(o => !string.IsNullOrWhiteSpace(o.SigningKey),
+                          "AckLink:Signer:SigningKey is required (or AckLink:SigningKey if using fallback).")
+                .ValidateOnStart();
+
+            // C2: bind ChaserJob options (use the local 'config', not 'Configuration')
+            services.AddOptions<ChaserJobOptions>()
+                .BindConfiguration("ChaserJob")
+                .Validate(o => o.CadenceMinutes > 0 && o.BatchSize > 0, "ChaserJob cadence/batch must be > 0")
+                .Validate(o => o.BusinessWindow is not null, "ChaserJob.BusinessWindow required")
+                .ValidateOnStart();
+
+            // C2: background job (self-disables if Enabled=false)
+            services.AddHostedService<ConfluenceSyncService.Scheduler.ChaserJobHostedService>();
+
             services.AddOptions<RegionOffsetsOptions>().BindConfiguration("RegionOffsets");
-            services.AddOptions<TeamsOptions>().BindConfiguration("Teams");
+            services.AddOptions<ConfluenceSyncService.Options.TeamsOptions>()
+                .BindConfiguration("Teams");
             services.AddOptions<ChaserOptions>().BindConfiguration("Chaser");
             services.AddOptions<SharePointFieldMappingsOptions>().BindConfiguration("SharePointFieldMappings");
             #endregion
 
-            #region Options (configure)
-            services.Configure<AckLinkOptions>(config.GetSection("AckLink"));
-            services.Configure<TeamsOptions>(config.GetSection("Teams"));
-            #endregion
 
             #region MS Graph Integration
             services.AddSingleton<ConfidentialClientApp>();

@@ -10,15 +10,26 @@ namespace ConfluenceSyncService.Security
         bool Verify(string data, string signature);
     }
 
-    public sealed class AckLinkOptions
+    /// <summary>
+    /// Signer configuration: only what the signer needs.
+    /// Keep policy knobs (RequireLatestLink, TTLs, etc.) in ConfluenceSyncService.Options.AckLinkOptions.
+    /// </summary>
+    public sealed class AckSignerOptions
     {
-        public string SigningKey { get; set; } = ""; // base64 or raw
+        /// <summary>Base64 or raw secret. If blank, a random key will be used (not recommended for production).</summary>
+        public string SigningKey { get; set; } = "";
+
+        /// <summary>Optional base URL used by the link generator (may be overridden elsewhere).</summary>
+        public string BaseUrl { get; set; } = "https://localhost";
+
+        /// <summary>Legacy carry-over (if you used it in link gen). Safe to leave.</summary>
         public int GraceDays { get; set; } = 1;
-        public string BaseUrl { get; set; } = "https://localhost"; // host of this app for links.
-        public AckLinkPolicy Policy { get; set; } = new();
     }
 
-    public sealed class HmacSigner(IOptions<AckLinkOptions> opts) : IHmacSigner
+    /// <summary>
+    /// HMAC-SHA256 signer used for ACK links.
+    /// </summary>
+    public sealed class HmacSigner(IOptions<AckSignerOptions> opts) : IHmacSigner
     {
         private readonly byte[] _key = NormalizeKey(opts.Value.SigningKey);
 
@@ -32,27 +43,19 @@ namespace ConfluenceSyncService.Security
         public bool Verify(string data, string signature)
         {
             var expected = Sign(data);
-            return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(signature));
+            return CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(expected),
+                Encoding.UTF8.GetBytes(signature));
         }
-
 
         private static byte[] NormalizeKey(string k)
         {
             if (string.IsNullOrWhiteSpace(k)) return RandomNumberGenerator.GetBytes(32);
-            try { return Convert.FromBase64String(k); } catch { return Encoding.UTF8.GetBytes(k); }
+            try { return Convert.FromBase64String(k); }
+            catch { return Encoding.UTF8.GetBytes(k); }
         }
 
         private static string Base64UrlEncode(byte[] bytes)
             => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
-
-    public sealed class AckLinkPolicy
-    {
-        public int InitialTtlCapHours { get; set; } = 336;  // Default cap for pre-due TTL. Will be overwritten by appsettings.json policy.
-        public int CushionHours { get; set; } = 12;          // Default buffer added pre-due. Will be overwritten by appsettings.json policy.
-        public int ChaserTtlHours { get; set; } = 36;        // each chaser TTL. Will be overwritten by appsettings.json policy.
-        public bool RequireLatestLink { get; set; } = true;  // strict rotation. Will be overwritten by appsettings.json policy.
-        public int AllowedPreviousLinks { get; set; } = 0;   // soft rotation window. Will be overwritten by appsettings.json policy.
-    }
-
 }

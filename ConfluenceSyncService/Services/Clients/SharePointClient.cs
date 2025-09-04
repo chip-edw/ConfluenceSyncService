@@ -1,12 +1,14 @@
-﻿using ConfluenceSyncService.Dtos;
+using ConfluenceSyncService.Dtos;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.MSGraphAPI;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Serilog;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 
 namespace ConfluenceSyncService.Services.Clients
 {
@@ -16,7 +18,9 @@ namespace ConfluenceSyncService.Services.Clients
         private readonly ConfidentialClientApp _confidentialClientApp;
         private readonly IConfiguration _configuration;
         private readonly Serilog.ILogger _logger;
-        private readonly ConcurrentDictionary<string, string> _listIdCache = new();         // Add a cache for list IDs
+
+        // Cache for list IDs keyed by "siteKey|displayName"
+        private readonly ConcurrentDictionary<string, string> _listIdCache = new();
 
         public SharePointClient(HttpClient httpClient, ConfidentialClientApp confidentialClientApp, IConfiguration configuration)
         {
@@ -40,16 +44,13 @@ namespace ConfluenceSyncService.Services.Clients
                 var listId = await GetListIdByNameAsync(siteId, listName);
                 var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items";
 
-                var payload = new
-                {
-                    fields = fields
-                };
+                var payload = new { fields };
 
-                var request = new HttpRequestMessage(HttpMethod.Post, url);
+                using var request = new HttpRequestMessage(HttpMethod.Post, url);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
                 request.Content = new StringContent(JsonConvert.SerializeObject(payload), Encoding.UTF8, "application/json");
 
-                var response = await _httpClient.SendAsync(request);
+                using var response = await _httpClient.SendAsync(request);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -79,28 +80,25 @@ namespace ConfluenceSyncService.Services.Clients
         {
             _logger.Information("Updating SharePoint list item {ItemId} in {ListName}", itemId, listName);
 
-            // ADD THIS DEBUG LOGGING
+            // Extra debug logging for payload
             _logger.Information("Fields being sent to SharePoint:");
             foreach (var field in fields)
-            {
                 _logger.Information("  {FieldName}: {FieldValue}", field.Key, field.Value);
-            }
 
             try
             {
                 var listId = await GetListIdByNameAsync(siteId, listName);
                 var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{itemId}/fields";
 
-                var request = new HttpRequestMessage(HttpMethod.Patch, url);
+                using var request = new HttpRequestMessage(HttpMethod.Patch, url);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-                // LOG THE JSON BEING SENT
                 var jsonPayload = JsonConvert.SerializeObject(fields, Formatting.Indented);
                 _logger.Information("JSON payload being sent to SharePoint: {JsonPayload}", jsonPayload);
 
                 request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-                var response = await _httpClient.SendAsync(request);
+                using var response = await _httpClient.SendAsync(request);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -128,17 +126,15 @@ namespace ConfluenceSyncService.Services.Clients
                 var listId = await GetListIdByNameAsync(siteId, listName);
                 var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{itemId}?$expand=fields";
 
-                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-                var response = await _httpClient.SendAsync(request);
+                using var response = await _httpClient.SendAsync(request);
 
                 if (!response.IsSuccessStatusCode)
                 {
                     if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                    {
                         return null;
-                    }
 
                     var errorContent = await response.Content.ReadAsStringAsync();
                     throw new HttpRequestException($"Failed to get SharePoint item {itemId}: {response.StatusCode} - {errorContent}");
@@ -174,12 +170,11 @@ namespace ConfluenceSyncService.Services.Clients
         {
             try
             {
-                // Simple token validation - try to make a basic Graph API call
                 var url = "https://graph.microsoft.com/v1.0/me";
-                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-                var response = await _httpClient.SendAsync(request);
+                using var response = await _httpClient.SendAsync(request);
                 return response.IsSuccessStatusCode;
             }
             catch
@@ -194,7 +189,6 @@ namespace ConfluenceSyncService.Services.Clients
         public async Task RefreshTokenAsync()
         {
             // Token refresh is handled by ConfidentialClientApp.GetAccessToken()
-            // It automatically refreshes if needed
             await _confidentialClientApp.GetAccessToken();
         }
 
@@ -211,10 +205,10 @@ namespace ConfluenceSyncService.Services.Clients
                 var listId = await GetListIdByNameAsync(siteId, listName);
                 var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items?$expand=fields";
 
-                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-                var response = await _httpClient.SendAsync(request);
+                using var response = await _httpClient.SendAsync(request);
                 response.EnsureSuccessStatusCode();
 
                 var content = await response.Content.ReadAsStringAsync();
@@ -260,10 +254,10 @@ namespace ConfluenceSyncService.Services.Clients
                 var listId = await GetListIdByNameAsync(siteId, listName);
                 var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/columns";
 
-                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-                var response = await _httpClient.SendAsync(request);
+                using var response = await _httpClient.SendAsync(request);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -304,50 +298,38 @@ namespace ConfluenceSyncService.Services.Clients
         {
             var results = new List<SharePointListItemDto>();
 
-            // Ensure we're working with UTC and format properly for OData
             var utcSince = sinceUtc.Kind == DateTimeKind.Utc ? sinceUtc : sinceUtc.ToUniversalTime();
 
-            _logger.Debug($"=== CONFIGURATION DEBUG ===");
-            _logger.Debug($"MaxFallbackItems from config: {_configuration.GetValue<int>("SharePoint:MaxFallbackItems", -1)}");
-            _logger.Debug($"EnableFallbackFiltering from config: {_configuration.GetValue<bool>("SharePoint:EnableFallbackFiltering", false)}");
-            _logger.Debug($"SharePoint section exists: {_configuration.GetSection("SharePoint").Exists()}");
+            _logger.Debug("=== CONFIGURATION DEBUG ===");
+            _logger.Debug("MaxFallbackItems from config: {Val}", _configuration.GetValue<int>("SharePoint:MaxFallbackItems", -1));
+            _logger.Debug("EnableFallbackFiltering from config: {Val}", _configuration.GetValue<bool>("SharePoint:EnableFallbackFiltering", false));
+            _logger.Debug("SharePoint section exists: {Val}", _configuration.GetSection("SharePoint").Exists());
 
             var sharepointSection = _configuration.GetSection("SharePoint");
-            _logger.Debug($"Raw MaxFallbackItems value: '{sharepointSection["MaxFallbackItems"]}'");
-            _logger.Debug($"Raw EnableFallbackFiltering value: '{sharepointSection["EnableFallbackFiltering"]}'");
-            _logger.Debug($"=== END CONFIG DEBUG ===");
+            _logger.Debug("Raw MaxFallbackItems value: '{Val}'", sharepointSection["MaxFallbackItems"]);
+            _logger.Debug("Raw EnableFallbackFiltering value: '{Val}'", sharepointSection["EnableFallbackFiltering"]);
+            _logger.Debug("=== END CONFIG DEBUG ===");
 
             try
             {
-                // Step 1: Get the list ID by display name (with caching)
                 var listId = await GetListIdByNameAsync(sitePath, listName);
 
-                // Replace your attempts array with just the working solution:
-                var filterDate = utcSince.ToString("M/d/yyyy h:mm:ss tt");
+                var filterDate = utcSince.ToString("M/d/yyyy h:mm:ss tt", CultureInfo.InvariantCulture);
                 var url = $"https://graph.microsoft.com/v1.0/sites/{sitePath}/lists/{listId}/items" +
                           $"?$expand=fields&$filter=fields/Modified ge '{filterDate}'";
 
-
-                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-                var response = await _httpClient.SendAsync(request);
+                using var response = await _httpClient.SendAsync(request);
 
-                _logger.Debug($"Response status: {response.StatusCode}");
+                _logger.Debug("Response status: {Status}", response.StatusCode);
 
-                if (response.IsSuccessStatusCode)
-                {
-                    _logger.Debug($"SUCCESS !");
-                }
-                else
-                {
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.Error($"Failed: {errorContent}");
-                }
-
-                // If all attempts failed, use fallback
                 if (!response.IsSuccessStatusCode)
                 {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.Error("Failed: {Error}", errorContent);
+
                     _logger.Warning("All date filter attempts failed, using fallback method...");
                     return await GetRecentlyModifiedItemsWithoutFilterAsync(sitePath, listName, sinceUtc);
                 }
@@ -371,17 +353,15 @@ namespace ConfluenceSyncService.Services.Clients
                     });
                 }
 
-                _logger.Debug($"Successfully retrieved {results.Count} items using date filter");
+                _logger.Debug("Successfully retrieved {Count} items using date filter", results.Count);
                 return results;
             }
             catch (Exception ex)
             {
-                _logger.Error($"Exception occurred: {ex.Message}");
-                _logger.Debug($"Exception type: {ex.GetType().Name}");
+                _logger.Error("Exception occurred: {Msg}", ex.Message);
+                _logger.Debug("Exception type: {Type}", ex.GetType().Name);
                 if (ex.InnerException != null)
-                {
-                    _logger.Debug($"Inner exception: {ex.InnerException.Message}");
-                }
+                    _logger.Debug("Inner exception: {Msg}", ex.InnerException.Message);
                 throw;
             }
         }
@@ -391,7 +371,6 @@ namespace ConfluenceSyncService.Services.Clients
         public async Task<string> xMarkTaskCompleteAsync(string resourceId, CancellationToken ct)
         {
             // If your resourceId is already the SP itemId, use it directly.
-            // If it is a business key, look up itemId first (omitted for brevity).
             var itemId = resourceId;
 
             var siteId = _configuration["SharePoint:SiteId"]!;
@@ -405,9 +384,10 @@ namespace ConfluenceSyncService.Services.Clients
             {
                 Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
             };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
             req.Headers.TryAddWithoutValidation("If-Match", "*");
 
-            var res = await _httpClient.SendAsync(req, ct);
+            using var res = await _httpClient.SendAsync(req, ct);
             if (!res.IsSuccessStatusCode)
             {
                 var err = await res.Content.ReadAsStringAsync(ct);
@@ -420,54 +400,36 @@ namespace ConfluenceSyncService.Services.Clients
 
         #endregion
 
-        #region GetRecentlyModifiedItemsWithoutFilterAsyn - Ths is the fallback
+        #region GetRecentlyModifiedItemsWithoutFilterAsync (Fallback)
 
-        // Fallback method - get all items and filter in memory (with configurable safety limits)
         private async Task<List<SharePointListItemDto>> GetRecentlyModifiedItemsWithoutFilterAsync(string sitePath, string listName, DateTime sinceUtc)
         {
             var listId = await GetListIdByNameAsync(sitePath, listName);
 
-            // Get the limit from configuration with debugging
             var maxItems = _configuration.GetValue<int>("SharePoint:MaxFallbackItems", 100);
-            _logger.Debug($"DEBUG: Configuration MaxFallbackItems = {maxItems}");
-            _logger.Debug($"DEBUG: Configuration section exists = {_configuration.GetSection("SharePoint").Exists()}");
+            _logger.Debug("Fallback: MaxFallbackItems = {Max}", maxItems);
 
-            // Debug individual config values
-            var sharepointSection = _configuration.GetSection("SharePoint");
-            _logger.Debug($"DEBUG: SharePoint:MaxFallbackItems = {sharepointSection["MaxFallbackItems"]}");
-            _logger.Debug($"DEBUG: SharePoint:EnableFallbackFiltering = {sharepointSection["EnableFallbackFiltering"]}");
-            _logger.Debug($"DEBUG: SharePoint:Hostname = {sharepointSection["Hostname"]}");
-
-            // Add safety limit and ordering to get most recent items first
             var url = $"https://graph.microsoft.com/v1.0/sites/{sitePath}/lists/{listId}/items" +
                       $"?$expand=fields&$orderby=lastModifiedDateTime desc&$top={maxItems}";
 
-            _logger.Debug($"Fallback: Getting recent items with safety limit of {maxItems} items (from config)");
-            _logger.Debug($"Fallback URL: {url}");
+            _logger.Debug("Fallback URL: {Url}", url);
 
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-            var response = await _httpClient.SendAsync(request);
-            _logger.Debug($"Fallback response status: {response.StatusCode}");
-
-
-
+            using var response = await _httpClient.SendAsync(request);
+            _logger.Debug("Fallback response status: {Status}", response.StatusCode);
 
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                _logger.Debug($"Fallback failed: {errorContent}");
+                _logger.Debug("Fallback failed: {Error}", errorContent);
                 throw new HttpRequestException($"Fallback method failed: {response.StatusCode} - {errorContent}");
             }
 
             var content = await response.Content.ReadAsStringAsync();
             var json = JObject.Parse(content);
 
-
-
-            // In the fallback method, after getting the JSON response, add this:
-            // Add this debugging section:
             _logger.Debug("\n=== FIELD STRUCTURE DEBUG ===");
             var firstItem = json["value"]?.FirstOrDefault();
             if (firstItem != null)
@@ -480,15 +442,13 @@ namespace ConfluenceSyncService.Services.Clients
                 {
                     _logger.Debug("\nAvailable fields:");
                     foreach (var field in fields.Children<JProperty>())
-                    {
-                        _logger.Debug($"Field: '{field.Name}' = '{field.Value}'");
-                    }
+                        _logger.Debug("Field: '{Name}' = '{Value}'", field.Name, field.Value);
                 }
             }
             _logger.Debug("=== END FIELD DEBUG ===\n");
 
             var totalItemsReturned = json["value"]?.Count() ?? 0;
-            _logger.Debug($"Graph API returned {totalItemsReturned} items (requested max {maxItems})");
+            _logger.Debug("Graph API returned {Count} items (requested max {Max})", totalItemsReturned, maxItems);
 
             var results = new List<SharePointListItemDto>();
             var totalProcessed = 0;
@@ -500,17 +460,13 @@ namespace ConfluenceSyncService.Services.Clients
                 var modifiedStr = item["lastModifiedDateTime"]?.ToString();
                 var modified = DateTime.TryParse(modifiedStr, out var parsed) ? parsed : DateTime.UtcNow;
 
-                // Only log first 5 items to avoid spam
                 if (totalProcessed <= 5)
-                {
-                    _logger.Debug($"Processing item {totalProcessed}: ID={id}, Modified={modified}");
-                }
+                    _logger.Debug("Processing item {N}: ID={Id}, Modified={Mod}", totalProcessed, id, modified);
 
-                // Since items are ordered by lastModifiedDateTime desc, 
-                // we can break early when we hit the cutoff date
+                // Items ordered desc; break when we pass the cutoff
                 if (modified < sinceUtc)
                 {
-                    _logger.Debug($"Reached items older than {sinceUtc}, stopping at item {totalProcessed}");
+                    _logger.Debug("Reached items older than {Since}, stopping at item {N}", sinceUtc, totalProcessed);
                     break;
                 }
 
@@ -525,99 +481,90 @@ namespace ConfluenceSyncService.Services.Clients
                 });
             }
 
-            _logger.Debug($"Fallback method: Found {results.Count} items modified since {sinceUtc} (processed {totalProcessed} total items, max allowed: {maxItems}, API returned: {totalItemsReturned})");
+            _logger.Debug("Fallback: Found {Count} items modified since {Since} (processed {Processed} / returned {Returned})",
+                results.Count, sinceUtc, totalProcessed, totalItemsReturned);
             return results;
         }
 
         #endregion
 
         #region GetListIdByNameAsync
-        private async Task<string> GetListIdByNameAsync(string sitePath, string listName)
+        private async Task<string> GetListIdByNameAsync(string sitePathOrId, string listName)
         {
-            var cacheKey = $"{sitePath}|{listName}";
+            var cacheKey = $"{sitePathOrId}|{listName}";
 
-            // Check cache first
             if (_listIdCache.TryGetValue(cacheKey, out var cachedId))
             {
-                _logger.Debug($"Using cached list ID for '{listName}': {cachedId}");
+                _logger.Debug("Using cached list ID for '{ListName}': {Id}", listName, cachedId);
                 return cachedId;
             }
 
-            _logger.Debug($"Cache miss - fetching list ID for '{listName}'");
+            _logger.Debug("Cache miss - fetching list ID for '{ListName}'", listName);
 
-            var url = $"https://graph.microsoft.com/v1.0/sites/{sitePath}/lists";
+            var url = $"https://graph.microsoft.com/v1.0/sites/{sitePathOrId}/lists";
+            _logger.Debug("Attempting to get lists from: {Url}", url);
 
-            _logger.Debug($"Attempting to get lists from: {url}");
-
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-            var response = await _httpClient.SendAsync(request);
+            using var response = await _httpClient.SendAsync(request);
 
-            _logger.Debug($"Lists API response status: {response.StatusCode}");
+            _logger.Debug("Lists API response status: {Status}", response.StatusCode);
 
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                _logger.Warning($"Lists API error response: {errorContent}");
+                _logger.Warning("Lists API error response: {Error}", errorContent);
 
-                // Try alternative site path formats
                 if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
-                    _logger.Warning($"Site not found with path '{sitePath}'. Trying alternative formats...");
+                    _logger.Warning("Site not found with path/id '{Site}'. Trying alternative formats...", sitePathOrId);
 
-                    // Try without the protocol prefix if it exists
-                    if (sitePath.Contains(":/"))
+                    if (sitePathOrId.Contains(":/"))
                     {
-                        var altSitePath = sitePath.Split(":/")[1];
-                        _logger.Warning($"Trying alternative site path: '{altSitePath}'");
+                        var altSitePath = sitePathOrId.Split(":/")[1];
+                        _logger.Warning("Trying alternative site path: '{Alt}'", altSitePath);
                         return await GetListIdByNameWithPath(altSitePath, listName);
                     }
 
-                    // Try with root prefix if it doesn't exist
-                    if (!sitePath.StartsWith("root"))
+                    if (!sitePathOrId.StartsWith("root", StringComparison.OrdinalIgnoreCase))
                     {
-                        var rootSitePath = $"root/sites/{sitePath.Replace("/sites/", "")}";
-                        _logger.Warning($"Trying root site path: '{rootSitePath}'");
+                        var rootSitePath = $"root/sites/{sitePathOrId.Replace("/sites/", "")}";
+                        _logger.Warning("Trying root site path: '{Alt}'", rootSitePath);
                         return await GetListIdByNameWithPath(rootSitePath, listName);
                     }
                 }
 
-                throw new HttpRequestException($"Failed to get lists from site '{sitePath}': {response.StatusCode} - {errorContent}");
+                throw new HttpRequestException($"Failed to get lists from site '{sitePathOrId}': {response.StatusCode} - {errorContent}");
             }
 
             var content = await response.Content.ReadAsStringAsync();
             var json = JObject.Parse(content);
 
-            _logger.Debug($"Found {json["value"]?.Count() ?? 0} lists in site");
+            _logger.Debug("Found {Count} lists in site", json["value"]?.Count() ?? 0);
 
-            // Cache ALL lists from this site while we're here
             foreach (var list in json["value"] ?? Enumerable.Empty<JToken>())
             {
                 var displayName = list["displayName"]?.ToString();
                 var listId = list["id"]?.ToString();
 
-                _logger.Debug($"Found list: '{displayName}' with ID: {listId}");
+                _logger.Debug("Found list: '{Display}' with ID: {Id}", displayName, listId);
 
                 if (!string.IsNullOrEmpty(displayName) && !string.IsNullOrEmpty(listId))
                 {
-                    var key = $"{sitePath}|{displayName}";
+                    var key = $"{sitePathOrId}|{displayName}";
                     _listIdCache.TryAdd(key, listId);
-                    _logger.Debug($"Cached list ID: '{displayName}' -> {listId}");
+                    _logger.Debug("Cached list ID: '{Display}' -> {Id}", displayName, listId);
                 }
             }
 
-            // Now get the one we wanted
             if (_listIdCache.TryGetValue(cacheKey, out var foundId))
-            {
                 return foundId;
-            }
 
-            // List available lists for debugging
             var availableLists = json["value"]?.Select(l => l["displayName"]?.ToString()).Where(n => !string.IsNullOrEmpty(n));
             var listNames = string.Join(", ", availableLists ?? Enumerable.Empty<string>());
 
-            throw new InvalidOperationException($"List '{listName}' not found in site '{sitePath}'. Available lists: {listNames}");
+            throw new InvalidOperationException($"List '{listName}' not found in site '{sitePathOrId}'. Available lists: {listNames}");
         }
         #endregion
 
@@ -627,17 +574,15 @@ namespace ConfluenceSyncService.Services.Clients
             var cacheKey = $"{altSitePath}|{listName}";
 
             if (_listIdCache.TryGetValue(cacheKey, out var cachedId))
-            {
                 return cachedId;
-            }
 
             var url = $"https://graph.microsoft.com/v1.0/sites/{altSitePath}/lists";
-            _logger.Warning($"Trying alternative URL: {url}");
+            _logger.Warning("Trying alternative URL: {Url}", url);
 
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-            var response = await _httpClient.SendAsync(request);
+            using var response = await _httpClient.SendAsync(request);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -661,9 +606,7 @@ namespace ConfluenceSyncService.Services.Clients
             }
 
             if (_listIdCache.TryGetValue(cacheKey, out var foundId))
-            {
                 return foundId;
-            }
 
             throw new InvalidOperationException($"List '{listName}' not found in alternative site path '{altSitePath}'");
         }
@@ -678,7 +621,6 @@ namespace ConfluenceSyncService.Services.Clients
             if (!mappings.Exists())
                 throw new InvalidOperationException("SharePointFieldMappings section is missing in configuration.");
 
-            // Find the list block (case-insensitive match on the JSON key)
             var listSection = mappings
                 .GetChildren()
                 .FirstOrDefault(s => string.Equals(s.Key, listDisplayName, StringComparison.OrdinalIgnoreCase));
@@ -686,7 +628,6 @@ namespace ConfluenceSyncService.Services.Clients
             if (listSection is null)
                 throw new InvalidOperationException($"No field mapping block found for list '{listDisplayName}'.");
 
-            // Find the logical field entry (e.g., "Status")
             var fieldEntry = listSection.GetChildren()
                 .FirstOrDefault(s => string.Equals(s.Key, logicalName, StringComparison.OrdinalIgnoreCase));
 
@@ -699,22 +640,19 @@ namespace ConfluenceSyncService.Services.Clients
 
         #endregion
 
-        #region MarkTaskCompleteAsync
-
+        #region MarkTaskCompleteAsync (current)
         public async Task<string> MarkTaskCompleteAsync(string resourceId, CancellationToken ct)
         {
-            var listDisplayName = "Phase Tasks & Metadata";
+            const string listDisplayName = "Phase Tasks & Metadata";
             var statusField = ResolveField(listDisplayName, "Status");
             var completedDateField = ResolveField(listDisplayName, "CompletedDate");
 
-            // For this test we assume resourceId is the SharePoint item ID in this list
-            var siteId = "v7n2m.sharepoint.com,d1ee4683-057e-41c1-abe8-8b7fcf24a609,37b9c1e6-3b8e-4e8e-981b-67291632e4c3";
-            var listId = await GetListIdAsync(siteId, listDisplayName, ct); // We'll add this if you don't have it already
+            var siteId = GetSupportSiteIdFromConfig();
+            var listId = await GetListIdByNameAsync(siteId, listDisplayName);
 
             var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{resourceId}/fields";
 
-            var completedIso = DateTimeOffset.UtcNow.ToString("o"); // UTC ISO 8601
-
+            var completedIso = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture); // UTC ISO 8601
             var payload = new Dictionary<string, object>
             {
                 [statusField] = "Completed",
@@ -728,7 +666,7 @@ namespace ConfluenceSyncService.Services.Clients
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
             req.Headers.TryAddWithoutValidation("If-Match", "*");
 
-            var res = await _httpClient.SendAsync(req, ct);
+            using var res = await _httpClient.SendAsync(req, ct);
             if (!res.IsSuccessStatusCode)
             {
                 var err = await res.Content.ReadAsStringAsync(ct);
@@ -740,18 +678,16 @@ namespace ConfluenceSyncService.Services.Clients
         }
         #endregion
 
-        #region GetListIdAsync
+        #region GetListIdAsync (by siteId + displayName)
         private async Task<string> GetListIdAsync(string siteId, string listDisplayName, CancellationToken ct)
         {
-            // Graph: GET /sites/{siteId}/lists?$filter=displayName eq '{listDisplayName}'
             var encodedListName = Uri.EscapeDataString(listDisplayName);
             var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists?$filter=displayName eq '{encodedListName}'";
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
-
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
 
-            var res = await _httpClient.SendAsync(req, ct);
+            using var res = await _httpClient.SendAsync(req, ct);
 
             if (!res.IsSuccessStatusCode)
             {
@@ -761,7 +697,7 @@ namespace ConfluenceSyncService.Services.Clients
             }
 
             var json = await res.Content.ReadAsStringAsync(ct);
-            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            using var doc = JsonDocument.Parse(json);
 
             var listId = doc.RootElement
                             .GetProperty("value")
@@ -773,11 +709,131 @@ namespace ConfluenceSyncService.Services.Clients
             if (string.IsNullOrWhiteSpace(listId))
                 throw new InvalidOperationException($"List '{listDisplayName}' not found in site {siteId}.");
 
-            return listId;
+            return listId!;
+        }
+        #endregion
+
+        #region Helpers (Site/List resolution from config)
+
+        private string GetSupportSiteIdFromConfig()
+        {
+            // Prefer Sites[DisplayName='Support']:SiteId, else fall back to SharePoint:SiteId
+            var supportSite = _configuration.GetSection("SharePoint")
+                                           .GetSection("Sites").GetChildren()
+                                           .FirstOrDefault(s => string.Equals(s["DisplayName"], "Support", StringComparison.OrdinalIgnoreCase));
+
+            var siteId = supportSite?["SiteId"] ?? _configuration["SharePoint:SiteId"];
+            if (string.IsNullOrWhiteSpace(siteId))
+                throw new InvalidOperationException("SharePoint site id not found. Ensure SharePoint:Sites[DisplayName='Support']:SiteId or SharePoint:SiteId is configured.");
+            return siteId;
+        }
+
+        private async Task<string> GetPhaseTasksListIdAsync(string siteId, CancellationToken ct)
+        {
+            const string listDisplayName = "Phase Tasks & Metadata";
+            return await GetListIdByNameAsync(siteId, listDisplayName);
         }
 
         #endregion
 
+        #region C2 APIs
 
+        public sealed record StatusDue(string Status, DateTimeOffset? DueDateUtc);
+
+        /// <summary>
+        /// C2: Confirm by item id (only Status + DueDateUtc), using mapped internal names.
+        /// </summary>
+        public async Task<StatusDue?> GetTaskStatusAndDueUtcAsync(long spItemId, CancellationToken ct)
+        {
+            var siteId = GetSupportSiteIdFromConfig();
+            var listId = await GetPhaseTasksListIdAsync(siteId, ct);
+
+            const string listDisplayName = "Phase Tasks & Metadata";
+            var statusField = ResolveField(listDisplayName, "Status");
+            var dueField = ResolveField(listDisplayName, "DueDateUtc");
+
+            var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{spItemId}?$select=id&$expand=fields($select={statusField},{dueField})";
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+            using var resp = await _httpClient.SendAsync(req, ct);
+
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
+            resp.EnsureSuccessStatusCode();
+
+            using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+
+            if (!doc.RootElement.TryGetProperty("fields", out var fields))
+                return new StatusDue("", null);
+
+            var status = fields.TryGetProperty(statusField, out var sProp) ? (sProp.GetString() ?? "") : "";
+            DateTimeOffset? due = null;
+
+            if (fields.TryGetProperty(dueField, out var dProp) && dProp.ValueKind == JsonValueKind.String)
+            {
+                var s = dProp.GetString();
+                if (!string.IsNullOrWhiteSpace(s) && DateTimeOffset.TryParse(s, out var parsed))
+                    due = parsed.ToUniversalTime();
+            }
+
+            return new StatusDue(status, due);
+        }
+
+        /// <summary>
+        /// C2: Write-through on chase (Important, ChaseCount++, NextChaseAtUtc), using mapped internal names.
+        /// </summary>
+        public async Task UpdateChaserFieldsAsync(long spItemId, bool important, bool incrementChase, DateTimeOffset nextChaseAtUtc, CancellationToken ct)
+        {
+            var siteId = GetSupportSiteIdFromConfig();
+            var listId = await GetPhaseTasksListIdAsync(siteId, ct);
+
+            const string listDisplayName = "Phase Tasks & Metadata";
+            var chaseField = ResolveField(listDisplayName, "ChaseCount");
+            var importantField = ResolveField(listDisplayName, "Important");
+            var nextChaseField = ResolveField(listDisplayName, "NextChaseAtUtc");
+
+            int? newChaseCount = null;
+
+            if (incrementChase)
+            {
+                var getUrl = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{spItemId}?$select=id&$expand=fields($select={chaseField})";
+                using var getReq = new HttpRequestMessage(HttpMethod.Get, getUrl);
+                getReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+                using var getResp = await _httpClient.SendAsync(getReq, ct);
+                getResp.EnsureSuccessStatusCode();
+
+                using var s = await getResp.Content.ReadAsStreamAsync(ct);
+                using var doc = await JsonDocument.ParseAsync(s, cancellationToken: ct);
+                var current = 0;
+                if (doc.RootElement.TryGetProperty("fields", out var f) &&
+                    f.TryGetProperty(chaseField, out var cc) &&
+                    cc.ValueKind == JsonValueKind.Number)
+                {
+                    current = cc.GetInt32();
+                }
+                newChaseCount = current + 1;
+            }
+
+            var patchUrl = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{spItemId}/fields";
+            var payload = new Dictionary<string, object?>
+            {
+                [importantField] = important,
+                [nextChaseField] = nextChaseAtUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)
+            };
+            if (newChaseCount.HasValue)
+                payload[chaseField] = newChaseCount.Value;
+
+            using var patchReq = new HttpRequestMessage(new HttpMethod("PATCH"), patchUrl)
+            {
+                Content = System.Net.Http.Json.JsonContent.Create(payload)
+            };
+            patchReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
+
+            using var resp = await _httpClient.SendAsync(patchReq, ct);
+            resp.EnsureSuccessStatusCode();
+        }
+
+        #endregion
     }
 }

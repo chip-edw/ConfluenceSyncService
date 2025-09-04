@@ -1,4 +1,5 @@
 using ConfluenceSyncService.Identity;
+using ConfluenceSyncService.Options;
 using ConfluenceSyncService.Security;
 using ConfluenceSyncService.SharePoint;
 using Microsoft.AspNetCore.Http;
