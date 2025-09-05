@@ -41,4 +41,9 @@ public class TaskIdMap
     // ACK link control
     public int AckVersion { get; set; } = 1;            // rotate per send to invalidate older links
     public DateTime? AckExpiresUtc { get; set; }        // optional bookkeeping for current link expiry
+    public DateTimeOffset? NextChaseAtUtcCached { get; set; }
+    public DateTimeOffset? LastChaseAtUtc { get; set; }
+    public string? Region { get; set; }
+    public string? AnchorDateType { get; set; }
+
 }

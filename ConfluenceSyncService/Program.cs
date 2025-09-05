@@ -18,12 +18,23 @@ namespace ConfluenceSyncService
     {
         public static async Task Main(string[] args)
         {
+            // Initialize basic console logging first
+            Log.Logger = new LoggerConfiguration()
+                .WriteTo.Console()
+                .CreateLogger();
+
+            Log.Information("Application starting...");
+
             AttachGlobalHandlers();
 
             try
             {
+                Log.Information("Creating WebApplication builder...");
+
                 // Build the web app with default providers (appsettings, env vars, cmdline).
                 var builder = WebApplication.CreateBuilder(args);
+
+                Log.Information("WebApplication builder created successfully");
 
                 // Logging/Serilog wired to the final configuration (env vars win over JSON).
                 builder.Logging.ClearProviders();
@@ -31,9 +42,9 @@ namespace ConfluenceSyncService
                 builder.Host.UseSerilog((ctx, services, lc) =>
                     lc.ReadFrom.Configuration(ctx.Configuration));
 
+                Log.Information("Serilog configured");
+
                 // ---- Minimal Linux/App Service hardening ------------------------------------
-                // If running on Linux and cursor path is missing or contains a Windows token,
-                // override to a persisted path and ensure the folder exists.
                 var isLinux = OperatingSystem.IsLinux();
                 if (isLinux)
                 {
@@ -57,11 +68,16 @@ namespace ConfluenceSyncService
                 }
                 // ---------------------------------------------------------------------------
 
+                Log.Information("Platform-specific configuration completed");
+
                 // Read ack-only switch AFTER config precedence is correct (env > JSON).
                 var ackOnly = builder.Configuration.GetValue<bool>("Hosting:AckOnly");
+                Log.Information("AckOnly mode: {AckOnly}", ackOnly);
 
                 // Order matters
+                Log.Information("Adding app secrets...");
                 builder.Services.AddAppSecrets(builder.Configuration);
+                Log.Information("App secrets added successfully");
 
                 // Ensure EF uses the same DB as State:DbPath when no DefaultConnection is set
                 var cs = builder.Configuration.GetConnectionString("DefaultConnection");
@@ -71,9 +87,11 @@ namespace ConfluenceSyncService
                     if (!Path.IsPathRooted(p)) p = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, p.Replace('/', Path.DirectorySeparatorChar)));
                     builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:DefaultConnection"] = $"Data Source={p};Cache=Shared" });
                 }
+                Log.Information("Database connection string configured");
 
-
+                Log.Information("Adding app services...");
                 builder.Services.AddAppServices(builder.Configuration); // This may register hosted services.
+                Log.Information("App services added successfully");
 
                 // In ACK-only mode, strip project-hosted background services so no sync runs.
                 if (ackOnly)
@@ -93,6 +111,7 @@ namespace ConfluenceSyncService
                     Log.Information("Hosting:AckOnly=true → removed {count} background hosted services.", hosted.Count);
                 }
 
+                Log.Information("Adding controllers and API versioning...");
                 builder.Services.AddControllers();
                 builder.Services.AddApiVersioning(options =>
                 {
@@ -105,6 +124,7 @@ namespace ConfluenceSyncService
                         new QueryStringApiVersionReader("api-version"));
                 });
 
+                Log.Information("Configuring additional services...");
                 ConfigureServices(builder.Services, builder.Configuration);
 
                 // Only configure Kestrel if ASPNETCORE_URLS isn't already provided (avoids override warning on App Service).
@@ -118,11 +138,14 @@ namespace ConfluenceSyncService
                     });
                 }
 
+                Log.Information("Building application...");
                 var app = builder.Build();
+                Log.Information("Application built successfully");
 
                 // === One-time SQLite DB self-seed to persistent storage =====================
                 try
                 {
+                    Log.Information("Starting SQLite DB self-seed...");
                     var liveDbPath = app.Configuration["State:DbPath"]; // expects /home/site/data/ConfluenceSyncService/ConfluenceSyncServiceDB.db on App Service
                     if (string.IsNullOrWhiteSpace(liveDbPath))
                     {
@@ -176,6 +199,7 @@ namespace ConfluenceSyncService
                 }
                 // ============================================================================
 
+                Log.Information("Starting service initialization...");
                 using (var scope = app.Services.CreateScope())
                 {
                     Log.Information($"Beginning {nameof(StartupConfiguration)}");
@@ -215,13 +239,16 @@ namespace ConfluenceSyncService
                     // if (!ackOnly) { var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(); db.Database.Migrate(); }
                 }
 
+                Log.Information("Configuring endpoints...");
                 ConfigureEndpoints(app, managementApiPort);
 
+                Log.Information("Starting application...");
                 await app.RunAsync();
             }
             catch (Exception ex)
             {
                 Log.Fatal(ex, "The application failed to start.");
+                throw; // Re-throw to ensure non-zero exit code
             }
             finally
             {
@@ -232,6 +259,8 @@ namespace ConfluenceSyncService
 
         private static void ConfigureServices(IServiceCollection services, IConfiguration configuration)
         {
+            Log.Information("Starting ConfigureServices...");
+
             services.AddLogging();
             services.AddSingleton(configuration);
 
@@ -245,10 +274,14 @@ namespace ConfluenceSyncService
                            .AllowAnyMethod();
                 });
             });
+
+            Log.Information("ConfigureServices completed");
         }
 
         private static void ConfigureEndpoints(WebApplication app, int managementApiPort)
         {
+            Log.Information("Starting ConfigureEndpoints...");
+
             app.UseCors("AllowFrontend");
             app.UseRouting();
 
@@ -309,10 +342,14 @@ namespace ConfluenceSyncService
                 }
             );
 #endif
+
+            Log.Information("ConfigureEndpoints completed");
         }
 
         private static void AttachGlobalHandlers()
         {
+            Log.Information("Attaching global exception handlers...");
+
             AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
             {
                 Exception? ex = args.ExceptionObject as Exception;
@@ -329,6 +366,8 @@ namespace ConfluenceSyncService
             {
                 Log.Information("Process is exiting. Performing cleanup...");
             };
+
+            Log.Information("Global exception handlers attached");
         }
     }
 }

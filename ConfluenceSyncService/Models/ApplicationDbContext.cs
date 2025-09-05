@@ -121,24 +121,33 @@ namespace ConfluenceSyncService.Models
                 entity.ToTable("TaskIdMap");
                 entity.HasKey(e => e.TaskId);
 
-                entity.Property(e => e.TaskId)
-                      .ValueGeneratedOnAdd(); // AUTOINCREMENT on SQLite
-
-                entity.Property(e => e.ListKey).HasDefaultValue("PhaseTasks");
-                entity.Property(e => e.State).HasDefaultValue("reserved");
+                entity.Property(e => e.TaskId).ValueGeneratedOnAdd(); // AUTOINCREMENT on SQLite
+                entity.Property(e => e.ListKey).HasDefaultValue("PhaseTasks").IsRequired();
+                entity.Property(e => e.State).HasDefaultValue("reserved").IsRequired();
                 entity.Property(e => e.CreatedUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
-                entity.Property(e => e.AckVersion).HasDefaultValue(1);
+                entity.Property(e => e.AckVersion).HasDefaultValue(1).IsRequired();
 
-                // Unique SpItemId, SQLite allows multiple NULLs
-                entity.HasIndex(e => e.SpItemId).IsUnique();
+                // C2 fields used by the chaser
+                entity.Property(e => e.NextChaseAtUtcCached); // DateTimeOffset?
+                entity.Property(e => e.LastChaseAtUtc);       // DateTimeOffset?
+                entity.Property(e => e.Region).HasMaxLength(64);
+                entity.Property(e => e.AnchorDateType).HasMaxLength(64);
 
+                // Existing indexes
+                entity.HasIndex(e => e.SpItemId).IsUnique(); // SQLite allows multiple NULLs
                 entity.HasIndex(e => e.CorrelationId);
-
                 entity.HasIndex(e => new { e.CustomerId, e.PhaseName, e.TaskName, e.WorkflowId });
 
                 // Helpful for channel lookups if needed later
                 entity.HasIndex(e => new { e.TeamId, e.ChannelId });
+
+                // C2 helper indexes
+                entity.HasIndex(e => e.NextChaseAtUtcCached)
+                      .HasDatabaseName("IX_TaskIdMap_NextChaseAtUtcCached");
+                entity.HasIndex(e => e.AckExpiresUtc)
+                      .HasDatabaseName("IX_TaskIdMap_AckExpiresUtc");
             });
+
 
         }
         #endregion

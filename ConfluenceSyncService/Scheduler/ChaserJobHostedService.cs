@@ -16,7 +16,7 @@ public sealed class ChaserJobHostedService : BackgroundService
     private readonly ChaserJobOptions _opts;
     private readonly string _dbPath;
     private readonly SharePointClient _sp;
-    private readonly TeamsNotificationService _teams;
+    private readonly INotificationService _teams;
     private readonly IHmacSigner _signer;
     private readonly AckSignerOptions _signerOpts;
     private readonly AckLinkOptions _ackPolicy;
@@ -27,7 +27,7 @@ public sealed class ChaserJobHostedService : BackgroundService
         Serilog.ILogger log,
         IOptions<ChaserJobOptions> opts,
         SharePointClient sp,
-        TeamsNotificationService teams,
+        INotificationService teams,
         IHmacSigner signer,
         IOptions<AckSignerOptions> signerOpts,
         IOptions<AckLinkOptions> ackPolicyOpts,

@@ -21,7 +21,7 @@ using ConfluenceSyncService.Time;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Client;
-
+using Serilog;
 
 namespace ConfluenceSyncService.Extensions
 {
@@ -29,10 +29,14 @@ namespace ConfluenceSyncService.Extensions
     {
         public static IServiceCollection AddAppServices(this IServiceCollection services, IConfiguration config)
         {
+            Log.Information("Starting AddAppServices...");
+
             // Tiny-app switch: when true, only endpoints (ACK/ping), no background workers.
             var ackOnly = config.GetValue<bool>("Hosting:AckOnly");
+            Log.Information("AckOnly mode: {AckOnly}", ackOnly);
 
             #region Core Configuration
+            Log.Information("Configuring HttpClients...");
             // Default client for anything not using the named ones
             services.AddHttpClient();
 
@@ -44,9 +48,11 @@ namespace ConfluenceSyncService.Extensions
                 if (!baseUrl.EndsWith("/")) baseUrl += "/";
                 c.BaseAddress = new Uri(baseUrl, UriKind.Absolute);
             });
+            Log.Information("HttpClients configured");
             #endregion
 
             #region Options (binds)
+            Log.Information("Configuring options...");
             services.AddOptions<ClickerIdentityOptions>().BindConfiguration("Identity");
 
             // Policy knobs for link behavior (lives in ConfluenceSyncService.Options)
@@ -84,10 +90,11 @@ namespace ConfluenceSyncService.Extensions
                 .BindConfiguration("Teams");
             services.AddOptions<ChaserOptions>().BindConfiguration("Chaser");
             services.AddOptions<SharePointFieldMappingsOptions>().BindConfiguration("SharePointFieldMappings");
+            Log.Information("Options configured");
             #endregion
 
-
             #region MS Graph Integration
+            Log.Information("Configuring MS Graph integration...");
             services.AddSingleton<ConfidentialClientApp>();
             services.AddSingleton<IMsalHttpClientFactory, MsalHttpClientFactory>();
 
@@ -98,33 +105,54 @@ namespace ConfluenceSyncService.Extensions
             // App-only Graph token provider for Teams + chaser
             services.AddSingleton<ConfluenceSyncService.Teams.IGraphTokenProvider,
                                   ConfluenceSyncService.MSGraphAPI.GraphTokenProvider>();
+            Log.Information("MS Graph integration configured");
             #endregion
 
             #region Business Services and Internal API
+            Log.Information("Configuring business services...");
             services.AddSingleton<StartupLoaderService>();
             services.AddSingleton<IWorkflowMappingProvider, WorkflowMappingProvider>();
             services.AddScoped<ISyncOrchestratorService, SyncOrchestratorService>();
 
             services.AddSingleton<ITaskIdIssuer, SqliteTaskIdIssuer>();
 
-            // SignatureService: inject base64 key once via DI
+            // FIXED: SignatureService registration - use lazy initialization instead of sync call
             services.AddSingleton<SignatureService>(sp =>
             {
+                // This will be called when the service is first requested, not during container building
+                Log.Information("Initializing SignatureService...");
                 var secrets = sp.GetRequiredService<ISecretsProvider>();
-                var b64 = secrets.GetApiKeyAsync(SecretsKeys.LinkSigningKey)
-                                 .GetAwaiter().GetResult();
 
-                if (string.IsNullOrWhiteSpace(b64))
-                    throw new InvalidOperationException($"Secret '{SecretsKeys.LinkSigningKey}' is missing.");
+                try
+                {
+                    var b64 = secrets.GetApiKeyAsync(SecretsKeys.LinkSigningKey)
+                                     .GetAwaiter().GetResult();
 
-                return new SignatureService(b64);
+                    if (string.IsNullOrWhiteSpace(b64))
+                    {
+                        Log.Error("Secret '{SecretKey}' is missing or empty", SecretsKeys.LinkSigningKey);
+                        throw new InvalidOperationException($"Secret '{SecretsKeys.LinkSigningKey}' is missing.");
+                    }
+
+                    Log.Information("SignatureService initialized successfully");
+                    return new SignatureService(b64);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Failed to initialize SignatureService");
+                    throw;
+                }
             });
 
             // Identity + due-date helpers + signed link generator
             services.AddSingleton<IClickerIdentityProvider, ClickerIdentityProvider>();
             services.AddSingleton<IRegionDueCalculator, RegionDueCalculator>();
             services.AddSingleton<ISignedLinkGenerator, SignedLinkGenerator>();
+            Log.Information("Business services configured");
+            #endregion
 
+            #region SharePoint/Teams/Email Clients
+            Log.Information("Configuring SharePoint/Teams/Email clients...");
             // SharePoint/Teams/Email clients now use the named "graph" HttpClient so relative paths resolve correctly
             services.AddTransient<SharePointClient>(provider =>
             {
@@ -166,7 +194,11 @@ namespace ConfluenceSyncService.Extensions
 
             // Notifications
             services.AddSingleton<INotificationService, TeamsNotificationService>();
+            Log.Information("SharePoint/Teams/Email clients configured");
+            #endregion
 
+            #region Confluence and External Clients
+            Log.Information("Configuring Confluence client...");
             // Confluence REST client (unchanged)
             services.AddHttpClient<ConfluenceClient>()
                 .AddTypedClient((httpClient, provider) =>
@@ -177,9 +209,11 @@ namespace ConfluenceSyncService.Extensions
                 });
 
             services.AddSingleton<ICursorStore, FileCursorStore>();
+            Log.Information("Confluence client configured");
             #endregion
 
             #region Entity Framework / DB
+            Log.Information("Configuring Entity Framework...");
             services.AddDbContext<ApplicationDbContext>((sp, options) =>
             {
                 var cfg = sp.GetRequiredService<IConfiguration>();
@@ -195,41 +229,56 @@ namespace ConfluenceSyncService.Extensions
                     cs = $"Data Source={fallbackPath};Cache=Shared";
                 }
 
+                Log.Information("Using database connection: {ConnectionString}", cs);
                 options.UseSqlite(cs);
             });
+            Log.Information("Entity Framework configured");
             #endregion
 
             #region Worker and Hosted Services
+            Log.Information("Configuring worker and hosted services...");
             // Register Worker for management API access either way
             services.AddSingleton<Worker>();
             services.AddSingleton<IWorkerService>(provider => provider.GetRequiredService<Worker>());
 
             if (!ackOnly)
             {
+                Log.Information("Full mode: Adding background services");
                 // Full mode (VM): run background services
                 services.AddHostedService(provider => provider.GetRequiredService<Worker>());
                 services.AddHostedService<ChaserService>();
             }
+            else
+            {
+                Log.Information("ACK-only mode: Skipping background services");
+            }
 
-            // ACK handler (for minimal API endpoint) — always available
+            // ACK handler (for minimal API endpoint) – always available
             services.AddTransient<AckActionHandler>();
+            Log.Information("Worker and hosted services configured");
             #endregion
 
+            Log.Information("AddAppServices completed successfully");
             return services;
         }
 
         public static IServiceCollection AddAppSecrets(this IServiceCollection services, IConfiguration configuration)
         {
+            Log.Information("Starting AddAppSecrets...");
+
             string secretsProviderType = configuration["SecretsProvider:Type"] ?? "Sqlite";
+            Log.Information("Using secrets provider type: {ProviderType}", secretsProviderType);
 
             switch (secretsProviderType)
             {
                 case "AzureKeyVault":
+                    Log.Information("Configuring Azure Key Vault secrets provider");
                     services.AddSingleton<ISecretsProvider>(provider =>
                         new AzureKeyVaultSecretsProvider(configuration));
                     break;
 
                 case "Sqlite":
+                    Log.Information("Configuring SQLite secrets provider");
                     // Register as Singleton - uses IServiceProvider to create scopes as needed
                     services.AddSingleton<SqliteSecretsProvider>();
                     services.AddSingleton<ISecretsProvider>(provider =>
@@ -237,9 +286,11 @@ namespace ConfluenceSyncService.Extensions
                     break;
 
                 default:
+                    Log.Error("Unsupported SecretsProvider type: {ProviderType}", secretsProviderType);
                     throw new InvalidOperationException($"Unsupported SecretsProvider type: {secretsProviderType}");
             }
 
+            Log.Information("AddAppSecrets completed successfully");
             return services;
         }
     }

@@ -19,6 +19,8 @@ namespace ConfluenceSyncService.Teams
         /// Also stamps NotifiedAtUtc on the SharePoint item.
         /// </summary>
         Task NotifyTaskAsync(string listId, string itemId, string htmlBody, string? mentionUserObjectId, string? mentionText, CancellationToken ct);
+        Task<bool> PostChaserAsync(string teamId, string channelId, string rootMessageId,
+            string overdueText, string ackUrl, string threadFallback, CancellationToken ct);
     }
 
     /// <summary>
