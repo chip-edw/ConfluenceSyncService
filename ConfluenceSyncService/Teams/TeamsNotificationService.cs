@@ -1,4 +1,6 @@
+using ConfluenceSyncService.MSGraphAPI;
 using ConfluenceSyncService.SharePoint;
+using Serilog;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -32,13 +34,13 @@ namespace ConfluenceSyncService.Teams
     public sealed class TeamsNotificationService(
         IHttpClientFactory httpFactory,
         Microsoft.Extensions.Options.IOptions<ConfluenceSyncService.Options.TeamsOptions> teams,
-        IGraphTokenProvider tokenProvider,
+        ITeamsGraphTokenProvider tokenProvider,
         ISharePointTaskUpdater sp)
         : INotificationService
     {
         private readonly ConfluenceSyncService.Options.TeamsOptions _opts = teams.Value;
         private readonly IHttpClientFactory _httpFactory = httpFactory;
-        private readonly IGraphTokenProvider _tokens = tokenProvider;
+        private readonly ITeamsGraphTokenProvider _tokens = tokenProvider;
         private readonly ISharePointTaskUpdater _sp = sp;
 
         // ---------------------------
@@ -87,6 +89,9 @@ namespace ConfluenceSyncService.Teams
             var team = string.IsNullOrWhiteSpace(teamId) ? _opts.TeamId : teamId!;
             var channel = string.IsNullOrWhiteSpace(channelId) ? _opts.ChannelId : channelId!;
 
+            Log.Information("PostChaserAsync called: TeamId={TeamId}, ChannelId={ChannelId}, RootMessageId={RootMessageId}, " +
+                "ThreadFallback={ThreadFallback}", team, channel, rootMessageId, threadFallback);
+
             // If we have a valid thread root, try to reply twice (text + card).
             if (!string.IsNullOrWhiteSpace(rootMessageId))
             {
@@ -97,7 +102,10 @@ namespace ConfluenceSyncService.Teams
                 var textResp = await http.PostAsJsonAsync(replyUrl, textPayload, ct);
                 if (!textResp.IsSuccessStatusCode)
                 {
-                    // If the thread is invalid and we can fallback, attempt to start new root.
+                    var errorContent = await textResp.Content.ReadAsStringAsync(ct);
+                    Log.Error("Teams text reply failed: Status={Status}, Error={ErrorContent}, URL={URL}, TeamId={TeamId}, ChannelId={ChannelId}, RootMessageId={RootMessageId}",
+                           textResp.StatusCode, errorContent, replyUrl, team, channel, rootMessageId);
+
                     if (string.Equals(threadFallback, "RootNew", StringComparison.OrdinalIgnoreCase))
                     {
                         return await PostChaserWithRootFallbackAsync(http, team, channel, overdueText, ackUrl, ct);
@@ -108,6 +116,13 @@ namespace ConfluenceSyncService.Teams
                 // 2) Reply with minimal Adaptive Card (Mark Complete)
                 var cardPayload = BuildAdaptiveCardReplyPayload(ackUrl);
                 var cardResp = await http.PostAsJsonAsync(replyUrl, cardPayload, ct);
+                if (!cardResp.IsSuccessStatusCode)
+                {
+                    var errorContent = await cardResp.Content.ReadAsStringAsync(ct);
+                    Log.Error("Teams card reply failed: Status={Status}, Error={ErrorContent}",
+                        cardResp.StatusCode, errorContent);
+                }
+                return cardResp.IsSuccessStatusCode;
                 return cardResp.IsSuccessStatusCode;
             }
 
@@ -130,6 +145,7 @@ namespace ConfluenceSyncService.Teams
             var http = _httpFactory.CreateClient("graph");
             var token = await _tokens.GetTokenAsync(ct);
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            Log.Information("Making Teams API call with token. BaseAddress: {BaseAddress}", http.BaseAddress);
             return http;
         }
 
@@ -140,10 +156,24 @@ namespace ConfluenceSyncService.Teams
         /// </summary>
         private static async Task<bool> PostChaserWithRootFallbackAsync(HttpClient http, string team, string channel, string overdueText, string ackUrl, CancellationToken ct)
         {
+            Log.Information("PostChaserWithRootFallbackAsync: Creating new root message in team={TeamId}, channel={ChannelId}", team, channel);
+
             // Root message: plain text (keep it simple and visible)
             var rootPayload = BuildPlainTextPayload(overdueText);
-            var rootResp = await http.PostAsJsonAsync($"/v1.0/teams/{team}/channels/{channel}/messages", rootPayload, ct);
-            if (!rootResp.IsSuccessStatusCode) return false;
+            var rootUrl = $"/v1.0/teams/{team}/channels/{channel}/messages";
+
+            Log.Information("Posting root message to URL: {URL}", rootUrl);
+            var rootResp = await http.PostAsJsonAsync(rootUrl, rootPayload, ct);
+
+            if (!rootResp.IsSuccessStatusCode)
+            {
+                var errorContent = await rootResp.Content.ReadAsStringAsync(ct);
+                Log.Error("Root message creation failed: Status={Status}, Error={ErrorContent}, URL={URL}",
+                    rootResp.StatusCode, errorContent, rootUrl);
+                return false;
+            }
+
+            Log.Information("Root message created successfully, parsing response for message ID");
 
             string? newRootId = null;
             await using (var s = await rootResp.Content.ReadAsStreamAsync(ct))
@@ -152,15 +182,33 @@ namespace ConfluenceSyncService.Teams
                 if (doc.RootElement.TryGetProperty("id", out var idProp))
                     newRootId = idProp.GetString();
             }
-            if (string.IsNullOrWhiteSpace(newRootId)) return false;
+
+            if (string.IsNullOrWhiteSpace(newRootId))
+            {
+                Log.Error("Failed to extract message ID from root message response");
+                return false;
+            }
+
+            Log.Information("Got new root message ID: {MessageId}, posting card reply", newRootId);
 
             // Reply to the new root with the card
             var replyUrl = $"/v1.0/teams/{team}/channels/{channel}/messages/{newRootId}/replies";
             var cardPayload = BuildAdaptiveCardReplyPayload(ackUrl);
             var cardResp = await http.PostAsJsonAsync(replyUrl, cardPayload, ct);
+
+            if (!cardResp.IsSuccessStatusCode)
+            {
+                var errorContent = await cardResp.Content.ReadAsStringAsync(ct);
+                Log.Error("Card reply failed: Status={Status}, Error={ErrorContent}, URL={URL}",
+                    cardResp.StatusCode, errorContent, replyUrl);
+            }
+            else
+            {
+                Log.Information("Card reply posted successfully");
+            }
+
             return cardResp.IsSuccessStatusCode;
         }
-
         private static string? TryExtractFirstHref(string html)
         {
             if (string.IsNullOrWhiteSpace(html)) return null;
@@ -240,40 +288,49 @@ namespace ConfluenceSyncService.Teams
         /// </summary>
         private static object BuildAdaptiveCardReplyPayload(string ackUrl)
         {
-            var card = BuildAdaptiveCardContent("Action Required", "Use the button below to mark complete.", ackUrl);
+            // Skip adaptive card entirely, just post a simple text message with clickable link
             return new
             {
                 body = new
                 {
                     contentType = "html",
-                    content = " " // minimal content; card carries the action
-                },
-                attachments = new object[]
-                {
-                    new { contentType = "application/vnd.microsoft.card.adaptive", content = card }
+                    content = $"<p>Action required - please review the task above.</p><p><a href=\"{ackUrl}\">Click here to mark complete</a></p>"
                 }
+                // No attachments - just a simple HTML message with clickable link
             };
         }
 
         /// <summary>
         /// Minimal Adaptive Card (1.4) with a single OpenUrl action to the provided ackUrl.
         /// </summary>
-        private static Dictionary<string, object?> BuildAdaptiveCardContent(string title, string subText, string ackUrl)
+        private static object BuildAdaptiveCardContent(string title, string subText, string ackUrl)
         {
-            return new Dictionary<string, object?>
+            return new
             {
-                ["type"] = "AdaptiveCard",
-                ["$schema"] = "http://adaptivecards.io/schemas/adaptive-card.json",
-                ["version"] = "1.4",
-                ["body"] = new object[]
+                type = "AdaptiveCard",
+                version = "1.2", // Try older version
+                body = new[]
                 {
-                    new { type = "TextBlock", text = title, weight = "Bolder", size = "Medium" },
-                    new { type = "TextBlock", text = subText, wrap = true, spacing = "Small" }
-                },
-                ["actions"] = new object[]
+            new
+            {
+                type = "TextBlock",
+                text = title
+            },
+            new
+            {
+                type = "TextBlock",
+                text = subText
+            }
+        },
+                actions = new[]
                 {
-                    new { type = "Action.OpenUrl", title = "✅ Mark Complete", url = ackUrl }
-                }
+            new
+            {
+                type = "Action.OpenUrl",
+                title = "Mark Complete",
+                url = ackUrl
+            }
+        }
             };
         }
     }

@@ -805,12 +805,12 @@ namespace ConfluenceSyncService.Services.Clients
 
                 using var s = await getResp.Content.ReadAsStreamAsync(ct);
                 using var doc = await JsonDocument.ParseAsync(s, cancellationToken: ct);
+
                 var current = 0;
                 if (doc.RootElement.TryGetProperty("fields", out var f) &&
-                    f.TryGetProperty(chaseField, out var cc) &&
-                    cc.ValueKind == JsonValueKind.Number)
+                    f.TryGetProperty(chaseField, out var cc))
                 {
-                    current = cc.GetInt32();
+                    current = ReadInt(cc);
                 }
                 newChaseCount = current + 1;
             }
@@ -833,6 +833,23 @@ namespace ConfluenceSyncService.Services.Clients
             using var resp = await _httpClient.SendAsync(patchReq, ct);
             resp.EnsureSuccessStatusCode();
         }
+
+        #region Helper methods
+
+        // SharePoint number field read helper
+        private static int ReadInt(JsonElement e)
+        {
+            if (e.ValueKind == JsonValueKind.Number)
+            {
+                if (e.TryGetInt32(out var i)) return i;
+                return (int)Math.Round(e.GetDouble());
+            }
+            if (e.ValueKind == JsonValueKind.String &&
+                int.TryParse(e.GetString(), out var s)) return s;
+            return 0;
+        }
+
+        #endregion
 
         #endregion
     }

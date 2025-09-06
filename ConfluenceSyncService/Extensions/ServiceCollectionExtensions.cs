@@ -94,6 +94,7 @@ namespace ConfluenceSyncService.Extensions
             #endregion
 
             #region MS Graph Integration
+
             Log.Information("Configuring MS Graph integration...");
             services.AddSingleton<ConfidentialClientApp>();
             services.AddSingleton<IMsalHttpClientFactory, MsalHttpClientFactory>();
@@ -105,7 +106,20 @@ namespace ConfluenceSyncService.Extensions
             // App-only Graph token provider for Teams + chaser
             services.AddSingleton<ConfluenceSyncService.Teams.IGraphTokenProvider,
                                   ConfluenceSyncService.MSGraphAPI.GraphTokenProvider>();
+
+            // Delegated token provider (for Teams)
+            // In ServiceCollectionExtensions.cs
+            services.AddSingleton<ITeamsGraphTokenProvider>(provider =>
+            {
+                var secrets = provider.GetRequiredService<ISecretsProvider>();
+                var logger = provider.GetRequiredService<Serilog.ILogger>();
+                var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
+                var httpClient = httpClientFactory.CreateClient();
+                return new TeamsGraphTokenProvider(secrets, logger, httpClient);
+            });
+
             Log.Information("MS Graph integration configured");
+
             #endregion
 
             #region Business Services and Internal API
@@ -229,7 +243,7 @@ namespace ConfluenceSyncService.Extensions
                     cs = $"Data Source={fallbackPath};Cache=Shared";
                 }
 
-                Log.Information("Using database connection: {ConnectionString}", cs);
+                Log.Verbose("Using database connection: {ConnectionString}", cs);
                 options.UseSqlite(cs);
             });
             Log.Information("Entity Framework configured");
@@ -256,10 +270,11 @@ namespace ConfluenceSyncService.Extensions
             // ACK handler (for minimal API endpoint) – always available
             services.AddTransient<AckActionHandler>();
             Log.Information("Worker and hosted services configured");
-            #endregion
+
 
             Log.Information("AddAppServices completed successfully");
             return services;
+            #endregion
         }
 
         public static IServiceCollection AddAppSecrets(this IServiceCollection services, IConfiguration configuration)

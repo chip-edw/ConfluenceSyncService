@@ -6,7 +6,7 @@ using ConfluenceSyncService.Teams;
 using ConfluenceSyncService.Time;
 using ConfluenceSyncService.Utilities;
 using Microsoft.Extensions.Options;
-using System.Text;
+using Serilog;
 
 namespace ConfluenceSyncService.Scheduler;
 
@@ -105,6 +105,9 @@ public sealed class ChaserJobHostedService : BackgroundService
 
         foreach (var t in due)
         {
+            Log.Information("Processing task: TaskId={TaskId}, TeamId={TeamId}, ChannelId={ChannelId}, RootMessageId={RootMessageId}," +
+                " SpItemId={SpItemId}", t.TaskId, t.TeamId, t.ChannelId, t.RootMessageId, t.SpItemId);
+
             ct.ThrowIfCancellationRequested();
 
             // 2) SP confirm by item id: Status + DueDateUtc
@@ -129,21 +132,23 @@ public sealed class ChaserJobHostedService : BackgroundService
             var inWindow = BusinessDayHelper.IsWithinWindow(t.Region, _opts.BusinessWindow.StartHourLocal, _opts.BusinessWindow.EndHourLocal, _opts.BusinessWindow.CushionHours, DateTimeOffset.UtcNow);
             var nextSendUtc = BusinessDayHelper.NextBusinessDayAtHourUtc(t.Region, _opts.SendHourLocal, DateTimeOffset.UtcNow);
             _log.Information("ChaserWindowCheck taskId={TaskId} inWindow={InWindow} nextSendUtc={Next}", t.TaskId, inWindow, nextSendUtc);
-            if (!inWindow)
-            {
-                await SqliteQueries.UpdateNextChaseCachedAsync(_dbPath, t.TaskId, nextSendUtc, _log, ct);
-                // write-through to SP to keep Power BI truth
-                await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: false, nextChaseAtUtc: nextSendUtc, ct);
-                continue;
-            }
+            //if (!inWindow)
+            //{
+            //    await SqliteQueries.UpdateNextChaseCachedAsync(_dbPath, t.TaskId, nextSendUtc, _log, ct);
+            //    // write-through to SP to keep Power BI truth
+            await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: false, nextChaseAtUtc: nextSendUtc, ct);
+            //    continue;
+            //}
 
             // 4) rotate link
             var newVersion = (t.AckVersion <= 0 ? 1 : t.AckVersion) + 1;
 
-            // Was: AckPolicyReader.GetChaserTtlHours()
-            var chaserTtlHours = _ackPolicy.Policy?.ChaserTtlHours ?? 24;
-            var ttl = TimeSpan.FromHours(Math.Max(1, chaserTtlHours));
-            var expires = DateTimeOffset.UtcNow + ttl;
+            // Calculate next chase time (will be used for both link expiration and database updates)
+            var nextUtc = BusinessDayHelper.NextBusinessDayAtHourUtc(t.Region, _opts.SendHourLocal, DateTimeOffset.UtcNow);
+
+            // ACK link expires when next chase is due
+            var expires = nextUtc;
+            var ttl = expires - DateTimeOffset.UtcNow;
 
             var ackUrl = BuildAckUrl(t.TaskId, t.Region, t.AnchorDateType, expires, newVersion);
             _log.Information("AckLinkRotate taskId={TaskId} oldVersion={Old} newVersion={New} ttlHours={Ttl} expUtc={Exp}",
@@ -151,22 +156,31 @@ public sealed class ChaserJobHostedService : BackgroundService
 
             // 5) post to Teams thread (short text + card)
             var overdueText = $"OVERDUE: {t.TaskName} was due {statusDue.DueDateUtc?.ToLocalTime():g}. Please review and ACK.";
+
             var postOk = await _teams.PostChaserAsync(t.TeamId, t.ChannelId, t.RootMessageId, overdueText, ackUrl, _opts.ThreadFallback, ct);
-            if (!postOk)
+            _log.Information("TeamsPostResult taskId={TaskId} success={Success}", t.TaskId, postOk);
+
+            // TEMPORARY: Treat root message success as overall success to test database updates
+            bool proceedWithUpdates = true; // Force true to test database logic
+
+            if (!proceedWithUpdates) // Changed from !postOk
             {
                 _log.Error("TeamsPostFailed taskId={TaskId}", t.TaskId);
-                continue; // do not bump counters if Teams failed
+                continue;
             }
 
-            // compute next scheduled chase time
-            var nextUtc = BusinessDayHelper.NextBusinessDayAtHourUtc(t.Region, _opts.SendHourLocal, DateTimeOffset.UtcNow);
+            _log.Information("Attempting SharePoint update for taskId={TaskId}", t.TaskId);
 
             // 6) write-through to SP (Important=true, ChaseCount+1, NextChaseAtUtc=nextUtc)
             await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: true, nextChaseAtUtc: nextUtc, ct);
             _log.Information("SpUpdateSuccess taskId={TaskId} spItemId={SpItemId} nextChaseAtUtc={Next}", t.TaskId, t.SpItemId, nextUtc);
 
+            _log.Information("Attempting SQLite update for taskId={TaskId} newVersion={Version} expires={Expires}",
+                t.TaskId, newVersion, expires);
+
             // 7) mirror to SQLite
             await SqliteQueries.UpdateChaserMirrorAsync(_dbPath, t.TaskId, newVersion, expires, nextUtc, _log, ct);
+            _log.Information("SQLite update completed for taskId={TaskId}", t.TaskId);
         }
     }
 
@@ -178,23 +192,11 @@ public sealed class ChaserJobHostedService : BackgroundService
 
         var expUnix = expiresUtc.ToUnixTimeSeconds();
 
-        // Canonical payload string — must match what your ACK endpoint verifies
-        var payload = $"{taskId}|{ackVersion}|{expUnix}";
+        // Build payload that matches what AckActionHandler expects
+        var payload = $"id={taskId}&exp={expUnix}";
         var sig = _signer.Sign(payload);
 
-        var sb = new StringBuilder();
-        sb.Append(baseUrl).Append("/ack?")
-          .Append("tid=").Append(Uri.EscapeDataString(taskId.ToString()))
-          .Append("&v=").Append(Uri.EscapeDataString(ackVersion.ToString()))
-          .Append("&exp=").Append(Uri.EscapeDataString(expUnix.ToString()))
-          .Append("&sig=").Append(Uri.EscapeDataString(sig));
-
-        if (!string.IsNullOrWhiteSpace(region))
-            sb.Append("&r=").Append(Uri.EscapeDataString(region));
-        if (!string.IsNullOrWhiteSpace(anchorDateType))
-            sb.Append("&a=").Append(Uri.EscapeDataString(anchorDateType));
-
-        return sb.ToString();
+        return $"{baseUrl}/maintenance/actions/mark-complete?id={taskId}&exp={expUnix}&sig={Uri.EscapeDataString(sig)}";
     }
 
     private static string ExtractSqlitePathOrFallback(string? connectionString, string contentRootPath)
