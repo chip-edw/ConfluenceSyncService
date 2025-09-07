@@ -553,7 +553,6 @@ namespace ConfluenceSyncService.Services.Sync
                 return MvpActivityCatalog.ForSupportTransition();
             }
         }
-
         private async Task UpsertPhaseTasksAsync(
             string siteId,
             string phaseTasksListName,
@@ -651,37 +650,109 @@ namespace ConfluenceSyncService.Services.Sync
                 // === Branch A: UPDATE existing item by id (no duplicates), skip if Completed ===
                 if (haveLinked)
                 {
-                    // Read current status to decide if we should skip reschedule
-                    var current = await _sharePointClient.GetListItemAsync(siteId, phaseTasksListName, spItemId!);
-                    string? curStatus = null;
-                    if (current.Fields != null && current.Fields.TryGetValue(fStatus, out var s) && s is not null)
-                        curStatus = s.ToString();
-
-
-                    if (string.Equals(curStatus, "Completed", StringComparison.OrdinalIgnoreCase))
+                    try
                     {
-                        _logger.Information("task.upsert {Correlation} skip reschedule: already Completed (TaskId={TaskId}, ItemId={ItemId})",
+                        _logger.Information("Processing linked item: TaskId={TaskId}, SpItemId={SpItemId}, Correlation={Correlation}",
+                            mappedId, spItemId, correlation);
+
+                        // Check field mapping first
+                        if (fStatus == null)
+                        {
+                            _logger.Error("fStatus field mapping returned null for 'Phase Tasks & Metadata'.'Status'");
+                            continue;
+                        }
+
+                        // Read current status to decide if we should skip reschedule
+                        var current = await _sharePointClient.GetListItemAsync(siteId, phaseTasksListName, spItemId!);
+
+                        if (current == null)
+                        {
+                            _logger.Warning("SharePoint item not found in list '{ListName}': SpItemId={SpItemId}, treating as unlinked", spItemId);
+                            continue;
+                        }
+
+                        if (current.Fields == null)
+                        {
+                            _logger.Warning("SharePoint item {SpItemId} has null Fields collection", spItemId);
+                            continue;
+                        }
+
+                        _logger.Information("SharePoint item {SpItemId} loaded with {FieldCount} fields", spItemId, current.Fields.Count);
+
+                        string? curStatus = null;
+                        if (current.Fields.TryGetValue(fStatus, out var s))
+                        {
+                            if (s is not null)
+                            {
+                                curStatus = s.ToString();
+                                _logger.Information("Status field found: '{Status}' for SpItemId={SpItemId}", curStatus, spItemId);
+                            }
+                            else
+                            {
+                                _logger.Information("Status field exists but is null for SpItemId={SpItemId}", spItemId);
+                            }
+                        }
+                        else
+                        {
+                            _logger.Information("Status field '{FieldName}' not found in SpItemId={SpItemId}", fStatus, spItemId);
+                        }
+
+                        if (string.Equals(curStatus, "Completed", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _logger.Information("task.upsert {Correlation} skip reschedule: already Completed (TaskId={TaskId}, ItemId={ItemId})",
+                                correlation, mappedId, spItemId);
+                            continue;
+                        }
+
+                        // Verify required field mappings before building patch
+                        if (fCorrelation == null || fAnchorType == null || fStartOffset == null ||
+                            fDuration == null || fTaskCategory == null || fRole == null)
+                        {
+                            _logger.Error("One or more required field mappings are null: fCorrelation={C}, fAnchorType={A}, fStartOffset={S}, fDuration={D}, fTaskCategory={T}, fRole={R}",
+                                fCorrelation, fAnchorType, fStartOffset, fDuration, fTaskCategory, fRole);
+                            continue;
+                        }
+
+                        // Patch only anchor/descriptive fields
+                        var patch = new Dictionary<string, object?>();
+                        patch[fCorrelation] = correlation;
+                        patch[fAnchorType] = a.AnchorDateType;
+                        patch[fStartOffset] = a.StartOffsetDays;
+                        patch[fDuration] = a.DurationBusinessDays;
+                        patch[fTaskCategory] = a.TaskCategory;
+                        patch[fRole] = a.DefaultRole;
+
+                        if (goLive.HasValue)
+                        {
+                            if (fGoLive != null && fields.ContainsKey(fGoLive))
+                                patch[fGoLive] = fields[fGoLive];
+                            else
+                                _logger.Warning("fGoLive field mapping is null or not in fields dictionary");
+                        }
+
+                        if (hypercareEnd.HasValue)
+                        {
+                            if (fHypercare != null && fields.ContainsKey(fHypercare))
+                                patch[fHypercare] = fields[fHypercare];
+                            else
+                                _logger.Warning("fHypercare field mapping is null or not in fields dictionary");
+                        }
+
+                        _logger.Information("Updating SharePoint item {SpItemId} with {PatchCount} fields", spItemId, patch.Count);
+
+                        await _sharePointClient.UpdateListItemAsync(siteId, phaseTasksListName, spItemId!, patch);
+
+                        _logger.Information("task.upsert {Correlation} updated anchor fields (TaskId={TaskId}, ItemId={ItemId})",
                             correlation, mappedId, spItemId);
+
                         continue;
                     }
-
-                    // Patch only anchor/descriptive fields
-                    var patch = new Dictionary<string, object?>();
-                    patch[fCorrelation] = correlation;
-                    patch[fAnchorType] = a.AnchorDateType;
-                    patch[fStartOffset] = a.StartOffsetDays;
-                    patch[fDuration] = a.DurationBusinessDays;
-                    patch[fTaskCategory] = a.TaskCategory;
-                    patch[fRole] = a.DefaultRole;
-
-                    if (goLive.HasValue) patch[fGoLive] = fields[fGoLive];
-                    if (hypercareEnd.HasValue) patch[fHypercare] = fields[fHypercare];
-
-                    await _sharePointClient.UpdateListItemAsync(siteId, phaseTasksListName, spItemId!, patch);
-                    _logger.Information("task.upsert {Correlation} updated anchor fields (TaskId={TaskId}, ItemId={ItemId})",
-                        correlation, mappedId, spItemId);
-
-                    continue;
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error processing linked SharePoint item: TaskId={TaskId}, SpItemId={SpItemId}, Correlation={Correlation}",
+                            mappedId, spItemId, correlation);
+                        continue; // Skip this item and continue processing
+                    }
                 }
 
                 // === Branch B: REUSE reserved TaskId (rare retry gap between reserve and link) ===
