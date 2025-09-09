@@ -6,8 +6,25 @@ public static class SqliteSchemaUpgrader
     // Adds columns to TaskIdMap if missing (idempotent, safe to call repeatedly)
     public static void EnsureChaserColumns(string dbPath, Serilog.ILogger log)
     {
+        log.Information("SqliteSchemaUpgrader: Connecting to database at {DbPath}", dbPath);
+
         using var conn = new SqliteConnection($"Data Source={dbPath};");
         conn.Open();
+
+        // Check if database file exists and log basic info
+        var fileInfo = new FileInfo(dbPath);
+        log.Information("Database file exists: {Exists}, Size: {Size} bytes", fileInfo.Exists, fileInfo.Length);
+
+        // List all tables in the database
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table'";
+        using var reader = cmd.ExecuteReader();
+        var tables = new List<string>();
+        while (reader.Read())
+        {
+            tables.Add(reader.GetString(0));
+        }
+        log.Information("Database contains tables: {Tables}", string.Join(", ", tables));
 
         // Handle corrupted indexes first, before any table operations
         try

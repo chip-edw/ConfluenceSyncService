@@ -234,7 +234,7 @@ namespace ConfluenceSyncService.Extensions
                 var env = sp.GetRequiredService<IHostEnvironment>();
 
                 // 1) Try appsettings/ENV: ConnectionStrings__DefaultConnection
-                var cs = cfg.GetConnectionString("DefaultConnection");
+                var cs = cfg.GetConnectionString("ConfluenceSync");
 
                 // 2) Fallback to the packaged DB under ./DB if nothing was provided
                 if (string.IsNullOrWhiteSpace(cs))

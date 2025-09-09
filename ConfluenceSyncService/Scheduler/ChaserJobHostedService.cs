@@ -38,7 +38,7 @@ public sealed class ChaserJobHostedService : BackgroundService
         _opts = opts.Value;
 
         // Derive SQLite file path from the configured connection string (same fallback as your EF setup)
-        var cs = config.GetConnectionString("ConfluenceSyncServiceDb");
+        var cs = config.GetConnectionString("ConfluenceSync");
         _dbPath = ExtractSqlitePathOrFallback(cs, env.ContentRootPath);
 
         _sp = sp;

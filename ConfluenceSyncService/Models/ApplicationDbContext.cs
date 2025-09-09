@@ -71,7 +71,7 @@ namespace ConfluenceSyncService.Models
                     .SetBasePath(exePath)
                     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
                     .Build();
-                var connectionString = configuration.GetConnectionString("DefaultConnection");
+                var connectionString = configuration.GetConnectionString("ConfluenceSync");
                 optionsBuilder.UseSqlite(connectionString);
             }
         }

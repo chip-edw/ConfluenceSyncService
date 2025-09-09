@@ -80,12 +80,12 @@ namespace ConfluenceSyncService
                 Log.Information("App secrets added successfully");
 
                 // Ensure EF uses the same DB as State:DbPath when no DefaultConnection is set
-                var cs = builder.Configuration.GetConnectionString("DefaultConnection");
+                var cs = builder.Configuration.GetConnectionString("ConfluenceSync");
                 if (string.IsNullOrWhiteSpace(cs))
                 {
                     var p = builder.Configuration["State:DbPath"] ?? "DB/ConfluenceSyncServiceDB.db";
                     if (!Path.IsPathRooted(p)) p = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, p.Replace('/', Path.DirectorySeparatorChar)));
-                    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:DefaultConnection"] = $"Data Source={p};Cache=Shared" });
+                    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:ConfluenceSync"] = $"Data Source={p};Cache=Shared" });
                 }
                 Log.Information("Database connection string configured");
 
