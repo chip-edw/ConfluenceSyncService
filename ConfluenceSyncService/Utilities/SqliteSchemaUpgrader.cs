@@ -78,6 +78,12 @@ public static class SqliteSchemaUpgrader
         }
         if (added.Count > 0)
             log.Information("SqliteSchemaUpgrader: Added columns to TaskIdMap: {Columns}", added);
+
+        // Force all changes to main database file
+        using var checkpointCmd = conn.CreateCommand();
+        checkpointCmd.CommandText = "PRAGMA wal_checkpoint(FULL)";
+        checkpointCmd.ExecuteNonQuery();
+        log.Information("Database changes checkpointed to main file");
     }
 
     private static void EnsureChaserIndexes(SqliteConnection conn, Serilog.ILogger log)
@@ -89,7 +95,8 @@ public static class SqliteSchemaUpgrader
             ["IX_TaskIdMap_CorrelationId"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_CorrelationId ON TaskIdMap(CorrelationId)",
             ["IX_TaskIdMap_SpItemId"] = "CREATE UNIQUE INDEX IF NOT EXISTS IX_TaskIdMap_SpItemId ON TaskIdMap(SpItemId)",
             ["IX_TaskIdMap_TeamId_ChannelId"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_TeamId_ChannelId ON TaskIdMap(TeamId, ChannelId)",
-            ["IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId ON TaskIdMap(CustomerId, PhaseName, TaskName, WorkflowId)"
+            ["IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId ON TaskIdMap(CustomerId, PhaseName, TaskName, WorkflowId)",
+            ["IX_TaskIdMap_Status"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_Status ON TaskIdMap(Status)"
         };
 
         bool IndexExists(string indexName)
@@ -173,5 +180,11 @@ public static class SqliteSchemaUpgrader
         }
 
         log.Information("SqliteSchemaUpgrader: Repaired corrupted indexes: {Indexes}", repaired);
+
+        // Checkpoint immediately after repair operations
+        using var checkpointCmd = conn.CreateCommand();
+        checkpointCmd.CommandText = "PRAGMA wal_checkpoint(FULL)";
+        checkpointCmd.ExecuteNonQuery();
+        log.Information("Database repair changes checkpointed to main file");
     }
 }

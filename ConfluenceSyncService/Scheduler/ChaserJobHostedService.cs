@@ -119,7 +119,9 @@ public sealed class ChaserJobHostedService : BackgroundService
             }
             if (string.Equals(statusDue.Status, "Completed", StringComparison.OrdinalIgnoreCase))
             {
-                _log.Information("SkipCompleted taskId={TaskId}", t.TaskId);
+                // Cache completion status to prevent future queries
+                await SqliteQueries.UpdateTaskStatusAsync(_dbPath, t.TaskId, "Completed", _log, ct);
+                _log.Information("SkipCompleted taskId={TaskId} (cached status)", t.TaskId);
                 continue;
             }
             if (statusDue.DueDateUtc is DateTimeOffset dd && dd > DateTimeOffset.UtcNow)

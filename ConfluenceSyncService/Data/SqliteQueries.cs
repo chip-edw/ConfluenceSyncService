@@ -26,6 +26,7 @@ public static class SqliteQueries
  FROM TaskIdMap
  WHERE NextChaseAtUtcCached IS NOT NULL
    AND datetime(NextChaseAtUtcCached) <= datetime('now')
+   AND (Status IS NULL OR Status != 'Completed')
  ORDER BY datetime(NextChaseAtUtcCached) ASC
  LIMIT $limit;";
         cmd.Parameters.AddWithValue("$limit", limit);
@@ -47,6 +48,21 @@ public static class SqliteQueries
             ));
         }
         return list;
+    }
+
+    public static async Task UpdateTaskStatusAsync(string dbPath, long taskId, string status, Serilog.ILogger log, CancellationToken ct)
+    {
+        using var conn = new SqliteConnection($"Data Source={dbPath};");
+        await conn.OpenAsync(ct);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+ UPDATE TaskIdMap
+ SET Status = $status
+ WHERE TaskId = $taskId;";
+        cmd.Parameters.AddWithValue("$status", status);
+        cmd.Parameters.AddWithValue("$taskId", taskId);
+        await cmd.ExecuteNonQueryAsync(ct);
+        log.Information("StatusCacheUpdate taskId={TaskId} status={Status}", taskId, status);
     }
 
     public static async Task UpdateNextChaseCachedAsync(string dbPath, long taskId, DateTimeOffset nextUtc, Serilog.ILogger log, CancellationToken ct)

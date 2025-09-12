@@ -64,6 +64,8 @@ namespace ConfluenceSyncService.Extensions
                           "AckLink.Policy invalid (cap/chaser TTLs must be > 0)")
                 .ValidateOnStart();
 
+            services.AddOptions<DatabaseMaintenanceOptions>().BindConfiguration("DatabaseMaintenance");
+
             // Signer config (lives in ConfluenceSyncService.Security)
             // Prefer "AckLink:Signer", but fall back to "AckLink" if you haven't split config yet.
             var signerSection = config.GetSection("AckLink:Signer");
@@ -261,6 +263,7 @@ namespace ConfluenceSyncService.Extensions
                 // Full mode (VM): run background services
                 services.AddHostedService(provider => provider.GetRequiredService<Worker>());
                 services.AddHostedService<ChaserService>();
+                services.AddHostedService<DatabaseMaintenanceHostedService>();
             }
             else
             {
