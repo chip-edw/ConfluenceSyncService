@@ -26,17 +26,6 @@ public static class SqliteSchemaUpgrader
         }
         log.Information("Database contains tables: {Tables}", string.Join(", ", tables));
 
-        // Handle corrupted indexes first, before any table operations
-        try
-        {
-            EnsureChaserIndexes(conn, log);
-        }
-        catch (SqliteException ex) when (ex.SqliteExtendedErrorCode == 11)
-        {
-            log.Warning("Corrupted database schema detected, attempting repair...");
-            RepairCorruptedIndexes(conn, log);
-        }
-
         bool HasCol(string name)
         {
             try
@@ -65,6 +54,7 @@ public static class SqliteSchemaUpgrader
             cmd.ExecuteNonQuery();
         }
 
+        // ADD COLUMNS FIRST
         var added = new List<string>();
         if (!HasCol("NextChaseAtUtcCached"))
         {
@@ -76,8 +66,24 @@ public static class SqliteSchemaUpgrader
             AddCol("ALTER TABLE TaskIdMap ADD COLUMN LastChaseAtUtc TEXT NULL;");
             added.Add("LastChaseAtUtc");
         }
+        if (!HasCol("Status"))
+        {
+            AddCol("ALTER TABLE TaskIdMap ADD COLUMN Status TEXT NULL;");
+            added.Add("Status");
+        }
         if (added.Count > 0)
             log.Information("SqliteSchemaUpgrader: Added columns to TaskIdMap: {Columns}", added);
+
+        // HANDLE INDEXES AFTER COLUMNS ARE ADDED
+        try
+        {
+            EnsureChaserIndexes(conn, log);
+        }
+        catch (SqliteException ex) when (ex.SqliteExtendedErrorCode == 11)
+        {
+            log.Warning("Corrupted database schema detected, attempting repair...");
+            RepairCorruptedIndexes(conn, log);
+        }
 
         // Force all changes to main database file
         using var checkpointCmd = conn.CreateCommand();
@@ -134,7 +140,8 @@ public static class SqliteSchemaUpgrader
             "IX_TaskIdMap_CorrelationId",
             "IX_TaskIdMap_SpItemId",
             "IX_TaskIdMap_TeamId_ChannelId",
-            "IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId"
+            "IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId",
+            "IX_TaskIdMap_Status"
         };
 
         // Drop all potentially corrupted indexes
@@ -160,7 +167,8 @@ public static class SqliteSchemaUpgrader
             "CREATE INDEX IX_TaskIdMap_CorrelationId ON TaskIdMap(CorrelationId)",
             "CREATE UNIQUE INDEX IX_TaskIdMap_SpItemId ON TaskIdMap(SpItemId)",
             "CREATE INDEX IX_TaskIdMap_TeamId_ChannelId ON TaskIdMap(TeamId, ChannelId)",
-            "CREATE INDEX IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId ON TaskIdMap(CustomerId, PhaseName, TaskName, WorkflowId)"
+            "CREATE INDEX IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId ON TaskIdMap(CustomerId, PhaseName, TaskName, WorkflowId)",
+            "CREATE INDEX IX_TaskIdMap_Status ON TaskIdMap(Status)"
         };
 
         var repaired = new List<string>();
