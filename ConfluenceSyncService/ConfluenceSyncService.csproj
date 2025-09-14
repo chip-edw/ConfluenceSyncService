@@ -7,6 +7,11 @@
         <UserSecretsId>dotnet-Confluence_Sync_Service-772cfc24-cb79-434e-9195-16f97f4d7f58</UserSecretsId>
         <!-- Optional if you plan to run as a Windows Service -->
         <EnableWindowsService>true</EnableWindowsService>
+
+        <!-- VERSION PROPERTIES: -->
+        <Version>1.2.0</Version>
+        <AssemblyVersion>1.2.0.0</AssemblyVersion>
+        <FileVersion>1.2.0.0</FileVersion>
     </PropertyGroup>
 
     <!-- Enable ASP.NET Core (controllers/routing/Kestrel) while staying on Worker SDK -->

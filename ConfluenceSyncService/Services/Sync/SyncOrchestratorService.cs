@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Serilog;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace ConfluenceSyncService.Services.Sync
 {
@@ -20,7 +21,13 @@ namespace ConfluenceSyncService.Services.Sync
         private readonly IWorkflowMappingProvider _mappingProvider;
         private readonly Serilog.ILogger _logger;
         private readonly ITaskIdIssuer _taskIdIssuer;
+        private readonly IHostEnvironment _environment;
 
+        // Single source-of-truth path for the workflow template JSON (no fallback).
+        // You can override via appsettings: "Workflow:TemplatePath"
+        private string WorkflowTemplatePath =>
+            _configuration["Workflow:TemplatePath"]
+            ?? Path.Combine(_environment.ContentRootPath, "Data", "Templates", "Workflow_template.json");
 
         public SyncOrchestratorService(
             SharePointClient sharePointClient,
@@ -29,7 +36,8 @@ namespace ConfluenceSyncService.Services.Sync
             IConfiguration configuration,
             ICursorStore cursorStore,
             IWorkflowMappingProvider mappingProvider,
-            ITaskIdIssuer taskIdIssuer)
+            ITaskIdIssuer taskIdIssuer,
+            IHostEnvironment environment)
         {
             _sharePointClient = sharePointClient;
             _confluenceClient = confluenceClient;
@@ -39,6 +47,7 @@ namespace ConfluenceSyncService.Services.Sync
             _mappingProvider = mappingProvider;
             _taskIdIssuer = taskIdIssuer;
             _logger = Log.ForContext<SyncOrchestratorService>();
+            _environment = environment;
         }
 
         public async Task RunSyncAsync(CancellationToken cancellationToken)
@@ -46,21 +55,11 @@ namespace ConfluenceSyncService.Services.Sync
             try
             {
                 _logger.Information("=== STARTING TABLE SYNC WORKFLOW ===");
-                // Step 1: Token management is handled in Worker, so we start with sync
 
-                // Step 2: Sync all Confluence Status Text Updates
                 await Step2_UpdateConfluenceStatusText(cancellationToken);
-
-                // Step 3: Sync Confluence updates to SharePoint
                 await Step3_SyncConfluenceToSharePoint(cancellationToken);
-
-                // Step 4: Sync SharePoint updates to Confluence
                 await Step4_SyncSharePointToConfluence(cancellationToken);
-
-                // Step 5 (MVP-ReadOnly): Read Transition Tracker deltas using cursor (no writes yet)
                 await Step5_ReadTransitionTrackerDeltas_ReadOnly(cancellationToken);
-
-                // Step 6: upsert + advance cursor
                 await Step6_UpsertFromTrackerAndAdvanceCursor(cancellationToken);
 
                 _logger.Information("=== TABLE SYNC WORKFLOW COMPLETED SUCCESSFULLY ===");
@@ -87,7 +86,6 @@ namespace ConfluenceSyncService.Services.Sync
                 {
                     _logger.Debug("Processing page: {PageId} - {CustomerName}", page.Id, page.CustomerName);
 
-                    // Check if page has transition tracker table
                     var fullPage = await _confluenceClient.GetPageWithContentAsync(page.Id, cancellationToken);
 
                     if (!PageHasTransitionTable(fullPage))
@@ -97,13 +95,11 @@ namespace ConfluenceSyncService.Services.Sync
                         continue;
                     }
 
-                    // Update status text based on colors
                     var updateSuccess = await _confluenceClient.UpdateStatusTextBasedOnColorAsync(page.Id, cancellationToken);
                     _logger.Debug("Status text update for page {PageId}: {Success}", page.Id, updateSuccess);
 
                     if (updateSuccess)
                     {
-                        // Parse the updated table data
                         var tableData = await _confluenceClient.ParseTransitionTrackerTableAsync(page.Id, cancellationToken);
                         _logger.Debug("Parsed {Count} fields from page {PageId}", tableData.Count, page.Id);
 
@@ -116,7 +112,6 @@ namespace ConfluenceSyncService.Services.Sync
                 catch (Exception ex)
                 {
                     _logger.Error(ex, "Failed to update status text for page {PageId}", page.Id);
-                    // Continue with other pages
                 }
             }
         }
@@ -143,7 +138,6 @@ namespace ConfluenceSyncService.Services.Sync
 
                 try
                 {
-                    // Get full page content and parse table
                     var fullPage = await _confluenceClient.GetPageWithContentAsync(page.Id, cancellationToken);
 
                     if (!PageHasTransitionTable(fullPage))
@@ -155,10 +149,6 @@ namespace ConfluenceSyncService.Services.Sync
                     var tableData = await _confluenceClient.ParseTransitionTrackerTableAsync(page.Id, cancellationToken);
                     var confluenceTableRow = MapToConfluenceTableRow(tableData, fullPage);
 
-                    //Temporary Test Parsing and logging.
-                    //confluenceTableRow.TestParsing();
-
-                    // Check if SharePoint item exists
                     var syncState = await GetOrCreateSyncState(page.Id, confluenceTableRow.CustomerName);
 
                     bool shouldSync = await ShouldSyncToSharePoint(confluenceTableRow, syncState);
@@ -176,7 +166,6 @@ namespace ConfluenceSyncService.Services.Sync
                 catch (Exception ex)
                 {
                     _logger.Error(ex, "Failed to sync page {PageId} to SharePoint", page.Id);
-                    // Continue with other pages
                 }
             }
         }
@@ -205,10 +194,8 @@ namespace ConfluenceSyncService.Services.Sync
                 {
                     var pageId = spItem.Fields.TryGetValue("ConfluencePageId", out var pageIdObj) ? pageIdObj?.ToString() : null;
 
-                    // Handle missing Confluence pages - create them from template if SharePoint has Sync Tracker set to 'Yes'
                     if (string.IsNullOrEmpty(pageId))
                     {
-                        // CHECK: Only create if SyncTracker is enabled
                         if (!ShouldSyncBasedOnSyncTracker(spItem))
                         {
                             _logger.Debug("SharePoint item {ItemId} has no ConfluencePageId but SyncTracker is not 'Yes', skipping auto-creation", spItem.Id);
@@ -224,19 +211,12 @@ namespace ConfluenceSyncService.Services.Sync
 
                             try
                             {
-                                // Create new page from template
                                 var newPageId = await _confluenceClient.CreateCustomerPageFromTemplateAsync(customerName, cancellationToken);
-
-                                // Update SharePoint with the new page info
                                 await UpdateSharePointWithNewPageInfo(spItem, newPageId, siteId, transitionTrackerList.DisplayName);
-
-                                // Create sync state for new page
                                 var newSyncState = await GetOrCreateSyncState(newPageId, customerName);
 
                                 _logger.Information("Successfully created Confluence page {PageId} for customer {CustomerName} and updated SharePoint item {ItemId}",
                                     newPageId, customerName, spItem.Id);
-
-                                // Continue to next item - let next sync cycle handle the data sync
                                 continue;
                             }
                             catch (Exception ex)
@@ -253,7 +233,6 @@ namespace ConfluenceSyncService.Services.Sync
                         }
                     }
 
-                    // EXISTING: Handle items that already have Confluence pages
                     var syncState = await GetSyncStateByPageId(pageId);
                     if (syncState == null)
                     {
@@ -276,7 +255,6 @@ namespace ConfluenceSyncService.Services.Sync
                 catch (Exception ex)
                 {
                     _logger.Error(ex, "Failed to process SharePoint item {ItemId}", spItem.Id);
-                    // Continue with other items
                 }
             }
         }
@@ -295,7 +273,6 @@ namespace ConfluenceSyncService.Services.Sync
                 ? parsed
                 : DateTimeOffset.Parse("2000-01-01T00:00:00Z");
 
-            // Use siteId (not sitePath) to avoid Graph path ambiguity
             var sites = StartupConfiguration.SharePointSites;
             var site = sites?.FirstOrDefault();
             if (site is null || string.IsNullOrWhiteSpace(site.SiteId))
@@ -305,18 +282,15 @@ namespace ConfluenceSyncService.Services.Sync
             }
             var siteId = site.SiteId;
 
-            // List display name from mapping (e.g., "Transition Tracker")
             var mapping = _mappingProvider.Get();
             var trackerListName = ResolveListDisplayName("transitionTracker", "Transition Tracker", "TransitionTracker");
 
-            // Pull all items (MVP) then filter by lastModified > cursor (ascending)
             var items = await _sharePointClient.GetAllListItemsAsync(siteId, trackerListName);
             var recent = items
                 .Where(i => i.LastModifiedUtc > since)
                 .OrderBy(i => i.LastModifiedUtc)
                 .ToList();
 
-            // Resolve internal field names from appsettings
             var fTitle = GetSharePointFieldName("Customer", "TransitionTracker");
             var fCustomerId = GetSharePointFieldName("CustomerId", "TransitionTracker");
             var fRegion = GetSharePointFieldName("Region", "TransitionTracker");
@@ -334,7 +308,6 @@ namespace ConfluenceSyncService.Services.Sync
 
                 var fields = it.Fields;
 
-                // Gate by Sync Tracker
                 var syncVal = fields.TryGetValue(fSyncTracker, out var sv) ? sv?.ToString() : null;
                 var isOn = string.Equals(syncVal, "true", StringComparison.OrdinalIgnoreCase)
                            || string.Equals(syncVal, "yes", StringComparison.OrdinalIgnoreCase)
@@ -370,8 +343,6 @@ namespace ConfluenceSyncService.Services.Sync
                     d.GoLive?.ToString("yyyy-MM-dd") ?? "null",
                     d.HypercareEnd?.ToString("yyyy-MM-dd") ?? "null");
             }
-
-            // NOTE: Do NOT advance cursor in Step 5 (read-only). We'll advance it after successful upserts in the next step.
         }
 
         // ===========================
@@ -406,11 +377,9 @@ namespace ConfluenceSyncService.Services.Sync
 
             var workflowId = mapping.WorkflowId;
 
-            // Reuse Step 5 mechanics: pull modified items since cursor (MVP using GetAll + filter)
             var items = await _sharePointClient.GetAllListItemsAsync(siteId, trackerListName);
             var modified = items.Where(i => i.LastModifiedUtc > since).OrderBy(i => i.LastModifiedUtc).ToList();
 
-            // Resolve tracker fields
             var fTitle = GetSharePointFieldName("Customer", "TransitionTracker");
             var fCustomerId = GetSharePointFieldName("CustomerId", "TransitionTracker");
             var fRegion = GetSharePointFieldName("Region", "TransitionTracker");
@@ -422,14 +391,12 @@ namespace ConfluenceSyncService.Services.Sync
 
             var activities = LoadActivitiesSafe();
 
-            // Process per tracker row
             DateTimeOffset? maxModified = since;
             foreach (var it in modified)
             {
                 if (cancellationToken.IsCancellationRequested) break;
                 maxModified = (maxModified is null || it.LastModifiedUtc > maxModified) ? it.LastModifiedUtc : maxModified;
 
-                // Skip if Sync Tracker off
                 var syncVal = it.Fields.TryGetValue(fSyncTracker, out var sv) ? sv?.ToString() : null;
                 var isOn = string.Equals(syncVal, "true", StringComparison.OrdinalIgnoreCase)
                            || string.Equals(syncVal, "yes", StringComparison.OrdinalIgnoreCase)
@@ -439,7 +406,6 @@ namespace ConfluenceSyncService.Services.Sync
                 var title = it.Fields.TryGetValue(fTitle, out var t) ? t?.ToString() ?? "" : "";
                 var customerId = it.Fields.TryGetValue(fCustomerId, out var cid) ? cid?.ToString() ?? "" : "";
 
-                // backfill CustomerId if missing
                 if (string.IsNullOrWhiteSpace(customerId))
                 {
                     var backfilled = await TryBackfillCustomerIdAsync(
@@ -453,7 +419,7 @@ namespace ConfluenceSyncService.Services.Sync
                     {
                         _logger.Warning("tracker.row {itemId} missing CustomerId; holding cursor (no advance)", it.Id);
                         hadBlockingSkips = true;
-                        continue; // don’t process this row yet
+                        continue;
                     }
 
                     customerId = backfilled!;
@@ -466,20 +432,16 @@ namespace ConfluenceSyncService.Services.Sync
                 it.Fields.TryGetValue(fCustomerWiki, out var wikiVal);
                 var customerName = NameFromWikiOrTitle(wikiVal, title);
 
-                // PhaseId
                 var phaseId = await GetOrCreatePhaseIdAsync(siteId, phaseTasksListName, customerId, phaseName, goLive, cancellationToken);
                 _logger.Information("phase.resolve {customerId} {phaseId}", customerId, phaseId);
 
-                // Upsert TransitionCustomers
                 await UpsertTransitionCustomerAsync(siteId, customersListName, customerId, customerName, region, phaseId,
                     hypercareEnd, cancellationToken);
 
-                // Upsert Phase Tasks (materialized)
                 await UpsertPhaseTasksAsync(siteId, phaseTasksListName, customerId, customerName, phaseId, phaseName, goLive,
-                    hypercareEnd, activities, workflowId, cancellationToken);
+                    hypercareEnd, activities, workflowId, region, cancellationToken);
             }
 
-            // Advance cursor if we processed any items
             if (!hadBlockingSkips && maxModified.HasValue && maxModified.Value > since)
             {
                 var newCursor = maxModified.Value.ToUniversalTime().ToString("o");
@@ -494,10 +456,7 @@ namespace ConfluenceSyncService.Services.Sync
             {
                 _logger.Information("cursor.advance no-op (no newer items)");
             }
-
         }
-
-
 
         #region Helper Methods
 
@@ -509,7 +468,7 @@ namespace ConfluenceSyncService.Services.Sync
             var fCustomerId = MapField("TransitionCustomers", "CustomerId");
             var fCustomerName = MapField("TransitionCustomers", "Customer");
             var fActivePhase = MapField("TransitionCustomers", "ActivePhaseID");
-            var fRegion = MapField("TransitionCustomers", "Region"); // optional
+            var fRegion = MapField("TransitionCustomers", "Region");
 
             SharePointListItem? existing = items.FirstOrDefault(i =>
                 i.Fields.TryGetValue(fCustomerId, out var cid) && (cid?.ToString() ?? "") == customerId);
@@ -521,10 +480,8 @@ namespace ConfluenceSyncService.Services.Sync
             };
             if (!string.IsNullOrWhiteSpace(region)) fields[fRegion] = region;
 
-            // MVP policy: set ActivePhaseID if this supportGoLive is the latest for this customer
             if (supportGoLive.HasValue)
             {
-                // Find latest support go-live among this customer's phases (quick scan in PhaseTasks list would be better; MVP: set it directly)
                 fields[fActivePhase] = phaseId;
             }
 
@@ -540,19 +497,101 @@ namespace ConfluenceSyncService.Services.Sync
             }
         }
 
+        // === Template loading: single file, no fallback ===
         private IReadOnlyList<ActivitySpec> LoadActivitiesSafe()
         {
-            try
-            {
-                // Try to read your template: Data/Templates/Workflow_template.json
-                // If you want, you can wire a real provider later. For MVP: fallback if parsing fails.
-                return MvpActivityCatalog.ForSupportTransition();
-            }
-            catch
-            {
-                return MvpActivityCatalog.ForSupportTransition();
-            }
+            // Single canonical path; no fallbacks
+            var jsonPath = Path.Combine(_environment.ContentRootPath, "Data", "Templates", "Workflow_template.json");
+
+            _logger.Information("Loading workflow template (new schema) from {Path}", jsonPath);
+
+            if (!File.Exists(jsonPath))
+                throw new FileNotFoundException($"Workflow template not found at {jsonPath}");
+
+            var jsonContent = File.ReadAllText(jsonPath);
+            return ParseWorkflowTemplate(jsonContent);
         }
+
+        // Expects the NEW flat array shape; allows "_comment" fields (ignored).
+        private IReadOnlyList<ActivitySpec> ParseWorkflowTemplate(string jsonContent)
+        {
+            using var document = JsonDocument.Parse(jsonContent);
+
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                throw new InvalidOperationException("Workflow template root must be a JSON object with 'Activities'.");
+
+            var root = document.RootElement;
+
+            // Optional: read WorkflowId if you ever want to compare it to mapping.WorkflowId
+            if (root.TryGetProperty("WorkflowId", out var wfIdProp))
+            {
+                var wfId = wfIdProp.GetString();
+                _logger.Information("Workflow template declares WorkflowId={WorkflowId}", wfId);
+            }
+
+            if (!root.TryGetProperty("Activities", out var activitiesProp) || activitiesProp.ValueKind != JsonValueKind.Array)
+                throw new InvalidOperationException("Workflow template must contain an 'Activities' array.");
+
+            var list = new List<ActivitySpec>();
+
+            foreach (var taskElement in activitiesProp.EnumerateArray())
+            {
+                // Required fields in the new schema
+                var taskName = taskElement.GetProperty("TaskName").GetString() ?? "";
+                var category = taskElement.GetProperty("Category").GetString() ?? "";
+                var role = taskElement.GetProperty("Role").GetString() ?? "";
+                var anchor = taskElement.GetProperty("AnchorDateType").GetString() ?? "";
+                var startOffset = taskElement.GetProperty("StartOffsetDays").GetInt32();
+                var duration = taskElement.GetProperty("DurationBusinessDays").GetInt32();
+
+                // Prefer explicit Key; fall back to a deterministic key if missing
+                string key = taskElement.TryGetProperty("Key", out var keyProp)
+                    ? (keyProp.GetString() ?? "")
+                    : "";
+
+                if (string.IsNullOrWhiteSpace(key))
+                    key = GenerateTaskKey(taskName);
+
+                list.Add(new ActivitySpec
+                {
+                    Key = key,
+                    TaskCategory = category,
+                    TaskName = taskName,
+                    DefaultRole = role,
+                    AnchorDateType = anchor,
+                    StartOffsetDays = startOffset,
+                    DurationBusinessDays = duration
+                });
+
+                _logger.Debug("Parsed activity: {Key} [{Category}] {TaskName} (Offset={Start}, Duration={Dur})",
+                    key, category, taskName, startOffset, duration);
+            }
+
+            _logger.Information("Workflow template parsed successfully: {Count} activities", list.Count);
+            return list;
+        }
+
+        private static string GenerateTaskKey(string taskName)
+        {
+            var cleaned = taskName
+                .Replace("\n", " ")
+                .Replace("\r", " ")
+                .Trim()
+                .ToLowerInvariant();
+
+            var words = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Where(w => w.Length > 2 && !new[] { "the", "and", "for", "with", "from" }.Contains(w))
+                .Take(3)
+                .ToArray();
+
+            if (words.Length == 0)
+            {
+                return cleaned.Length > 10 ? cleaned.Substring(0, 10) : cleaned;
+            }
+
+            return string.Join("-", words);
+        }
+
         private async Task UpsertPhaseTasksAsync(
             string siteId,
             string phaseTasksListName,
@@ -564,11 +603,11 @@ namespace ConfluenceSyncService.Services.Sync
             DateTimeOffset? hypercareEnd,
             IReadOnlyList<ActivitySpec> activities,
             string workflowId,
+            string region,
             CancellationToken ct)
         {
             var listKey = "PhaseTasks";
 
-            // Field mappings
             var fCorrelation = MapField("Phase Tasks & Metadata", "CorrelationId");
             var fCustomerId = MapField("Phase Tasks & Metadata", "CustomerId");
             var fCustomer = MapField("Phase Tasks & Metadata", "Customer");
@@ -585,11 +624,52 @@ namespace ConfluenceSyncService.Services.Sync
             var fHypercare = MapField("Phase Tasks & Metadata", "HypercareEndDate");
             var fStatus = MapField("Phase Tasks & Metadata", "Status");
 
+
+            // === SELF-HEALING: Detect and fix TaskIdMap records missing notification fields ===
+            try
+            {
+                var recordsNeedingHealing = await _dbContext.TaskIdMaps
+                    .Where(x => x.CustomerId == customerId
+                             && x.State == "linked"
+                             && (x.NextChaseAtUtcCached == null || x.TeamId == null || x.ChannelId == null)
+                             && (x.Status == null || x.Status != "Completed"))
+                    .ToListAsync(ct);
+
+                if (recordsNeedingHealing.Any())
+                {
+                    // Check customer's SyncTracker status
+                    var syncState = await _dbContext.TableSyncStates
+                        .FirstOrDefaultAsync(s => s.CustomerName == customerName, ct);
+
+                    if (syncState?.SyncTracker == "Yes")
+                    {
+                        var teamId = StartupConfiguration.TeamsConfiguration?.TeamId;
+                        var channelId = StartupConfiguration.TeamsConfiguration?.ChannelId;
+
+                        foreach (var record in recordsNeedingHealing)
+
+                            await _dbContext.SaveChangesAsync(ct);
+                        _logger.Information("Self-healing completed for customer {CustomerId}: {Count} records updated",
+                            customerId, recordsNeedingHealing.Count);
+                    }
+                    else
+                    {
+                        _logger.Information("Self-healing skipped for customer {CustomerId}: SyncTracker={SyncTracker}",
+                            customerId, syncState?.SyncTracker ?? "null");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Self-healing failed for customer {CustomerId}", customerId);
+            }
+            // === END SELF-HEALING ===
+
+
             foreach (var a in activities)
             {
                 var correlation = Sha1($"{customerId}|{phaseId}|{workflowId}|{a.Key}");
 
-                // Build the outgoing field set (anchor + descriptive only).
                 var fields = new Dictionary<string, object>
                 {
                     [fCorrelation] = correlation,
@@ -605,17 +685,14 @@ namespace ConfluenceSyncService.Services.Sync
                     [fDuration] = a.DurationBusinessDays
                 };
 
-                // Only add anchor dates when present, in ISO 8601 Z format at midnight
                 if (goLive.HasValue)
                     fields[fGoLive] = goLive.Value.ToString("yyyy-MM-ddT00:00:00Z");
                 if (hypercareEnd.HasValue)
                     fields[fHypercare] = hypercareEnd.Value.ToString("yyyy-MM-ddT00:00:00Z");
 
-                // Resolve mapping via local SQLite first
                 var map = await _dbContext.TaskIdMaps.AsNoTracking().FirstOrDefaultAsync(
                     x => x.ListKey == listKey && x.CorrelationId == correlation && x.State == "linked", ct);
 
-                // Fallback: deterministic key (anchor-proof), newest first
                 ConfluenceSyncService.Models.TaskIdMap? detMap = null;
                 if (map is null)
                 {
@@ -634,7 +711,6 @@ namespace ConfluenceSyncService.Services.Sync
                 bool haveLinked = !string.IsNullOrEmpty(spItemId);
                 bool haveReserved = detMap is not null && detMap.State == "reserved" && string.IsNullOrEmpty(detMap.SpItemId);
 
-                // If fallback matched and correlation changed, refresh local mapping to new correlation for next runs
                 if (map is null && detMap is not null && detMap.CorrelationId != correlation && haveLinked)
                 {
                     var tracked = await _dbContext.TaskIdMaps.FirstOrDefaultAsync(x => x.TaskId == detMap.TaskId, ct);
@@ -647,7 +723,6 @@ namespace ConfluenceSyncService.Services.Sync
                     }
                 }
 
-                // === Branch A: UPDATE existing item by id (no duplicates), skip if Completed ===
                 if (haveLinked)
                 {
                     try
@@ -655,14 +730,12 @@ namespace ConfluenceSyncService.Services.Sync
                         _logger.Information("Processing linked item: TaskId={TaskId}, SpItemId={SpItemId}, Correlation={Correlation}",
                             mappedId, spItemId, correlation);
 
-                        // Check field mapping first
                         if (fStatus == null)
                         {
                             _logger.Error("fStatus field mapping returned null for 'Phase Tasks & Metadata'.'Status'");
                             continue;
                         }
 
-                        // Read current status to decide if we should skip reschedule
                         var current = await _sharePointClient.GetListItemAsync(siteId, phaseTasksListName, spItemId!);
 
                         if (current == null)
@@ -704,7 +777,6 @@ namespace ConfluenceSyncService.Services.Sync
                             continue;
                         }
 
-                        // Verify required field mappings before building patch
                         if (fCorrelation == null || fAnchorType == null || fStartOffset == null ||
                             fDuration == null || fTaskCategory == null || fRole == null)
                         {
@@ -713,7 +785,6 @@ namespace ConfluenceSyncService.Services.Sync
                             continue;
                         }
 
-                        // Patch only anchor/descriptive fields
                         var patch = new Dictionary<string, object?>();
                         patch[fCorrelation] = correlation;
                         patch[fAnchorType] = a.AnchorDateType;
@@ -751,11 +822,10 @@ namespace ConfluenceSyncService.Services.Sync
                     {
                         _logger.Error(ex, "Error processing linked SharePoint item: TaskId={TaskId}, SpItemId={SpItemId}, Correlation={Correlation}",
                             mappedId, spItemId, correlation);
-                        continue; // Skip this item and continue processing
+                        continue;
                     }
                 }
 
-                // === Branch B: REUSE reserved TaskId (rare retry gap between reserve and link) ===
                 if (haveReserved && mappedId.HasValue)
                 {
                     fields[fStatus] = "Not Started";
@@ -773,11 +843,9 @@ namespace ConfluenceSyncService.Services.Sync
                     continue;
                 }
 
-                // === Branch C: TRUE CREATE (no mapping exists) ===
                 {
                     fields[fStatus] = "Not Started";
 
-                    // Reserve a TaskId locally and stamp it into the SP fields
                     var taskId = await _taskIdIssuer.ReserveAsync(
                         listKey: listKey,
                         correlationId: correlation,
@@ -794,7 +862,6 @@ namespace ConfluenceSyncService.Services.Sync
 
                     var id = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
 
-                    // Link the reserved TaskId to the created SharePoint item id
                     await _taskIdIssuer.LinkToSharePointAsync(taskId, id, ct);
 
                     _logger.Information("task.upsert {Correlation} created {Task} with ID {ItemId}", correlation, a.TaskName, id);
@@ -802,13 +869,10 @@ namespace ConfluenceSyncService.Services.Sync
             }
         }
 
-
-
         private bool ShouldSyncBasedOnSyncTracker(SharePointListItem spItem)
         {
             if (spItem.Fields.TryGetValue("SyncTracker", out var syncTrackerValue))
             {
-                // Handle different possible values
                 var syncTracker = syncTrackerValue?.ToString()?.ToLowerInvariant();
 
                 return syncTracker switch
@@ -816,11 +880,9 @@ namespace ConfluenceSyncService.Services.Sync
                     "true" => true,
                     "yes" => true,
                     "1" => true,
-                    _ => false  // Default to false for null, empty, "false", "no", "0", etc.
+                    _ => false
                 };
             }
-
-            // If SyncTracker field doesn't exist, default to false (don't sync)
             return false;
         }
 
@@ -839,8 +901,6 @@ namespace ConfluenceSyncService.Services.Sync
 
         private bool PageHasTransitionTable(ConfluencePage page)
         {
-            // Check if the page content contains a transition tracker table
-            // This is a simplified check - you might want to make it more robust
             return !string.IsNullOrEmpty(page.AdfContent) &&
                    page.AdfContent.Contains("Transition Tracker");
         }
@@ -885,7 +945,6 @@ namespace ConfluenceSyncService.Services.Sync
             }
             else
             {
-                // Update customer name if it changed
                 if (syncState.CustomerName != customerName)
                 {
                     _logger.Information("Updating customer name for page {PageId}: '{OldName}' -> '{NewName}'",
@@ -913,22 +972,18 @@ namespace ConfluenceSyncService.Services.Sync
             _logger.Debug("  - Confluence LastModified: {ConfluenceModified}", confluenceRow.LastModifiedUtc);
             _logger.Debug("  - Sync State LastConfluenceModified: {SyncStateModified}", syncState.LastConfluenceModifiedUtc);
 
-            // Check if Confluence Sync Tracker allows sync
             if (!ShouldSyncBasedOnConfluenceSyncTracker(confluenceRow))
             {
                 _logger.Debug("Skipping Confluence page {PageId} - Sync Tracker is not 'Yes'", confluenceRow.PageId);
                 return false;
             }
 
-            // Sync if:
-            // 1. Never synced before
             if (syncState.LastSyncedUtc == null || string.IsNullOrEmpty(syncState.SharePointItemId))
             {
                 _logger.Information("Page {PageId} needs sync: Never synced before or no SharePoint item", confluenceRow.PageId);
                 return true;
             }
 
-            // 2. Confluence page is newer than last sync
             if (confluenceRow.LastModifiedUtc > syncState.LastConfluenceModifiedUtc)
             {
                 _logger.Information("Page {PageId} needs sync: Confluence modified since last sync ({ConfluenceTime} > {SyncTime})",
@@ -942,14 +997,12 @@ namespace ConfluenceSyncService.Services.Sync
 
         private async Task<bool> ShouldSyncToConfluence(SharePointListItem spItem, TableSyncState syncState)
         {
-            // Check SyncTracker field first
             if (!ShouldSyncBasedOnSyncTracker(spItem))
             {
                 _logger.Debug("Skipping SharePoint item {ItemId} - SyncTracker is not 'Yes'", spItem.Id);
                 return false;
             }
 
-            // Add debug logging like the other direction
             _logger.Debug("Evaluating sync need for SharePoint item {ItemId}:", spItem.Id);
             _logger.Debug("  - LastSyncedUtc: {LastSynced}", syncState.LastSyncedUtc);
             _logger.Debug("  - SharePoint LastModified: {SharePointModified}", spItem.LastModifiedUtc);
@@ -979,23 +1032,19 @@ namespace ConfluenceSyncService.Services.Sync
                 var fields = confluenceRow.ToSharePointFields(_configuration, "TransitionTracker");
                 string itemId;
 
-                // Step 1: Try to find existing SharePoint item by ConfluencePageId
                 var existingItem = await FindExistingSharePointItem(siteId, listName, confluenceRow.PageId);
 
                 if (existingItem != null)
                 {
-                    // Found existing item - UPDATE it
                     itemId = existingItem.Id;
                     _logger.Information("Found existing SharePoint item {ItemId} for page {PageId}, updating it", itemId, confluenceRow.PageId);
 
                     await _sharePointClient.UpdateListItemAsync(siteId, listName, itemId, fields);
 
-                    // Update sync state with the found item ID
                     syncState.SharePointItemId = itemId;
                 }
                 else if (!string.IsNullOrEmpty(syncState.SharePointItemId))
                 {
-                    // Sync state has an item ID, but we couldn't find it - try to update anyway
                     itemId = syncState.SharePointItemId;
                     _logger.Information("Using sync state SharePoint item {ItemId} for page {PageId}", itemId, confluenceRow.PageId);
 
@@ -1005,7 +1054,6 @@ namespace ConfluenceSyncService.Services.Sync
                     }
                     catch (HttpRequestException ex) when (ex.Message.Contains("404") || ex.Message.Contains("NotFound"))
                     {
-                        // Item was deleted from SharePoint, create a new one
                         _logger.Warning("SharePoint item {ItemId} not found, creating new item for page {PageId}", itemId, confluenceRow.PageId);
                         itemId = await _sharePointClient.CreateListItemAsync(siteId, listName, fields);
                         syncState.SharePointItemId = itemId;
@@ -1013,20 +1061,18 @@ namespace ConfluenceSyncService.Services.Sync
                 }
                 else
                 {
-                    // No existing item found and no sync state - this is a genuinely new item
                     _logger.Information("Creating new SharePoint item for page {PageId}", confluenceRow.PageId);
                     itemId = await _sharePointClient.CreateListItemAsync(siteId, listName, fields);
                     syncState.SharePointItemId = itemId;
                 }
 
-                // Update sync state
                 syncState.LastConfluenceModifiedUtc = confluenceRow.LastModifiedUtc;
                 syncState.LastSyncedUtc = DateTime.UtcNow;
                 syncState.LastSyncSource = "Confluence";
                 syncState.LastSyncStatus = "Success";
                 syncState.ConfluencePageVersion = confluenceRow.PageVersion;
                 syncState.UpdatedAt = DateTime.UtcNow;
-                syncState.LastErrorMessage = null; // Clear any previous errors
+                syncState.LastErrorMessage = null;
 
                 await _dbContext.SaveChangesAsync();
 
@@ -1051,7 +1097,6 @@ namespace ConfluenceSyncService.Services.Sync
             {
                 _logger.Debug("Searching for existing SharePoint item with ConfluencePageId = {PageId}", confluencePageId);
 
-                // Get all items and search for matching ConfluencePageId
                 var allItems = await _sharePointClient.GetAllListItemsAsync(siteId, listName);
 
                 var existingItem = allItems.FirstOrDefault(item =>
@@ -1087,10 +1132,8 @@ namespace ConfluenceSyncService.Services.Sync
         {
             try
             {
-                // Extract the SharePoint data and map it back to Confluence table format
                 var confluenceTableData = MapSharePointItemToConfluenceTable(spItem);
 
-                // Update the Confluence page table with the SharePoint data
                 await _confluenceClient.UpdateTransitionTrackerFromSharePointAsync(
                     syncState.ConfluencePageId,
                     confluenceTableData);
@@ -1120,7 +1163,6 @@ namespace ConfluenceSyncService.Services.Sync
         {
             var tableData = new Dictionary<string, string>();
 
-            // Map SharePoint field names back to Confluence table field names
             if (spItem.Fields.TryGetValue("field_1", out var region))
                 tableData["Region"] = region?.ToString() ?? "";
 
@@ -1175,19 +1217,16 @@ namespace ConfluenceSyncService.Services.Sync
                 "yes" => "Yes",
                 "no" => "No",
                 "pending" => "Pending",
-                _ => boolValue.ToString() // Return original if not recognized
+                _ => boolValue.ToString()
             };
         }
 
-        // Helper method to update SharePoint with new Confluence page info. Populates the SharePoint List field 'Customer Wiki'
         private async Task UpdateSharePointWithNewPageInfo(SharePointListItem spItem, string pageId, string siteId, string listName)
         {
             try
             {
-                // Get the page URL
                 var pageUrl = await _confluenceClient.GetPageUrlAsync(pageId);
 
-                // Get the SharePoint field name for CustomerWiki from configuration
                 var customerWikiFieldName = GetSharePointFieldName("CustomerWiki", "TransitionTracker");
                 var confluencePageIdFieldName = GetSharePointFieldName("ConfluencePageId", "TransitionTracker");
 
@@ -1205,11 +1244,10 @@ namespace ConfluenceSyncService.Services.Sync
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to update SharePoint item {ItemId} with new Confluence page info", spItem.Id);
-                throw; // Re-throw since this is critical for the sync to work
+                throw;
             }
         }
 
-        // Helper method to get SharePoint field name from configuration
         private string GetSharePointFieldName(string logicalFieldName, string listType)
         {
             var fieldMappings = _configuration.GetSection($"SharePointFieldMappings:{listType}");
@@ -1229,17 +1267,14 @@ namespace ConfluenceSyncService.Services.Sync
         {
             var lists = _mappingProvider.Get().Lists;
 
-            // 1) Exact key(s)
             if (lists.TryGetValue(primaryKey, out var lm)) return lm.Name;
             foreach (var k in alternateKeys)
                 if (lists.TryGetValue(k, out lm)) return lm.Name;
 
-            // 2) By Name exact match (display name)
             var exact = lists.Values.FirstOrDefault(v =>
                 string.Equals(v.Name, fallbackDisplayName, StringComparison.OrdinalIgnoreCase));
             if (exact != null) return exact.Name;
 
-            // 3) Heuristics by contains
             if (primaryKey.Contains("customer", StringComparison.OrdinalIgnoreCase))
             {
                 var guess = lists.Values.FirstOrDefault(v => v.Name.Contains("Customer", StringComparison.OrdinalIgnoreCase));
@@ -1257,15 +1292,43 @@ namespace ConfluenceSyncService.Services.Sync
                 if (guess != null) return guess.Name;
             }
 
-            // 4) Helpful error
             throw new KeyNotFoundException(
                 $"List mapping not found for key '{primaryKey}'. Tried alternates: [{string.Join(", ", alternateKeys)}]. " +
                 $"Available keys: {string.Join(", ", lists.Keys)}");
         }
 
-        // ===== GUID Related helpers =====
+        /// <summary>
+        /// Calculates when a task becomes due based on anchor date + offset days.
+        /// Returns null if anchor date is missing or calculation cannot be performed.
+        /// </summary>
+        private static DateTimeOffset? CalculateTaskDueDate(
+            DateTimeOffset? goLiveDate,
+            DateTimeOffset? hypercareEndDate,
+            string? anchorDateType,
+            int startOffsetDays)
+        {
+            if (string.IsNullOrWhiteSpace(anchorDateType))
+            {
+                return null;
+            }
 
-        // Name-based GUID v5 (deterministic from a string)
+            DateTimeOffset? anchorDate = anchorDateType.ToLowerInvariant() switch
+            {
+                "golive" => goLiveDate,
+                "hypercareend" => hypercareEndDate,
+                _ => null
+            };
+
+            if (!anchorDate.HasValue)
+            {
+                return null;
+            }
+
+            // Add offset days (can be negative for tasks before anchor date)
+            return anchorDate.Value.AddDays(startOffsetDays);
+        }
+
+        // ===== GUID Related helpers =====
         private static Guid GuidV5(Guid ns, string name)
         {
             using var sha1 = SHA1.Create();
@@ -1278,8 +1341,8 @@ namespace ConfluenceSyncService.Services.Sync
 
             var newGuid = new byte[16];
             Array.Copy(hash, 0, newGuid, 0, 16);
-            newGuid[6] = (byte)((newGuid[6] & 0x0F) | (5 << 4)); // version 5
-            newGuid[8] = (byte)((newGuid[8] & 0x3F) | 0x80);     // RFC 4122 variant
+            newGuid[6] = (byte)((newGuid[6] & 0x0F) | (5 << 4));
+            newGuid[8] = (byte)((newGuid[8] & 0x3F) | 0x80);
             SwapByteOrder(newGuid);
             return new Guid(newGuid);
         }
@@ -1289,11 +1352,9 @@ namespace ConfluenceSyncService.Services.Sync
             Swap(0, 3); Swap(1, 2); Swap(4, 5); Swap(6, 7);
         }
 
-        // Namespace for service (can be any constant Guid)
         private static readonly Guid Namespace_ConfluenceSyncService =
             new Guid("723049de-0ae9-49db-9a87-4d68e096abbd");
 
-        // Try to backfill CustomerId on the tracker item and return it, or null if we can’t.
         private async Task<string?> TryBackfillCustomerIdAsync(
             string siteId,
             string trackerListName,
@@ -1301,7 +1362,6 @@ namespace ConfluenceSyncService.Services.Sync
             SharePointListItem trackerItem,
             CancellationToken ct)
         {
-            // Resolve tracker fields
             var fTitle = GetSharePointFieldName("Title", "TransitionTracker");
             var fCustomerId = GetSharePointFieldName("CustomerId", "TransitionTracker");
             var fCustomerWiki = GetSharePointFieldName("CustomerWiki", "TransitionTracker");
@@ -1310,16 +1370,14 @@ namespace ConfluenceSyncService.Services.Sync
             var wiki = trackerItem.Fields.TryGetValue(fCustomerWiki, out var w) ? w?.ToString() ?? "" : "";
             var pageId = trackerItem.Fields.TryGetValue(fConfluenceId, out var pid) ? pid?.ToString() ?? "" : "";
 
-            // 1) If a TransitionCustomers row already exists for this name/wiki, reuse its CustomerId
             var fCust_CustomerId = MapField("TransitionCustomers", "CustomerId");
-            var fCust_Name = MapField("TransitionCustomers", "Customer");     // display name/title
+            var fCust_Name = MapField("TransitionCustomers", "Customer");
             var customers = await _sharePointClient.GetAllListItemsAsync(siteId, customersListName);
             var match = customers.FirstOrDefault(i =>
             {
                 var nameMatches = i.Fields.TryGetValue(fCust_Name, out var nm)
                                   && string.Equals(nm?.ToString() ?? "", title, StringComparison.OrdinalIgnoreCase);
                 if (nameMatches) return true;
-                // If you keep the wiki URL in TransitionCustomers, add a mapping and check it here.
                 return false;
             });
             if (match != null && match.Fields.TryGetValue(fCust_CustomerId, out var existingIdObj))
@@ -1334,22 +1392,17 @@ namespace ConfluenceSyncService.Services.Sync
                 }
             }
 
-            // 2) Otherwise generate a deterministic GUID v5 from best available key
             var key = !string.IsNullOrWhiteSpace(wiki) ? $"wiki:{wiki}"
                     : !string.IsNullOrWhiteSpace(pageId) ? $"page:{pageId}"
                     : $"name:{title}";
             var newGuid = GuidV5(Namespace_ConfluenceSyncService, key).ToString();
 
-            // Write back to tracker
             await _sharePointClient.UpdateListItemAsync(siteId, trackerListName, trackerItem.Id,
                 new Dictionary<string, object> { [fCustomerId] = newGuid });
             _logger.Information("tracker.backfill customerId (generated) item={itemId} id={id} from={key}", trackerItem.Id, newGuid, key);
             return newGuid;
         }
 
-
-
-        // ===== NEW small helpers for Step 5 =====
         private static DateTimeOffset? TryParseDate(object? val)
         {
             if (val is null) return null;
@@ -1369,7 +1422,6 @@ namespace ConfluenceSyncService.Services.Sync
         private async Task<string> GetOrCreatePhaseIdAsync(
             string siteId, string phaseTasksListName, string customerId, string phaseName, DateTimeOffset? goLive, CancellationToken ct)
         {
-            // Pull all phase tasks for MVP, filter in-process
             var all = await _sharePointClient.GetAllListItemsAsync(siteId, phaseTasksListName);
 
             var fCustomerId = MapField("Phase Tasks & Metadata", "CustomerId");
@@ -1390,10 +1442,8 @@ namespace ConfluenceSyncService.Services.Sync
                 }
             }
 
-            // Not found: new GUID
             return Guid.NewGuid().ToString();
         }
-
 
         private string MapField(string section, string logical)
         {

@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace ConfluenceSyncService.Models
 {
@@ -23,5 +23,6 @@ namespace ConfluenceSyncService.Models
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+        public string? SyncTracker { get; set; }
     }
 }

@@ -26,12 +26,12 @@ public static class SqliteSchemaUpgrader
         }
         log.Information("Database contains tables: {Tables}", string.Join(", ", tables));
 
-        bool HasCol(string name)
+        bool HasCol(string name, string tableName = "TaskIdMap")
         {
             try
             {
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = "PRAGMA table_info('TaskIdMap');";
+                cmd.CommandText = $"PRAGMA table_info('{tableName}');";
                 using var rdr = cmd.ExecuteReader();
                 while (rdr.Read())
                 {
@@ -42,7 +42,7 @@ public static class SqliteSchemaUpgrader
             }
             catch (SqliteException ex) when (ex.SqliteExtendedErrorCode == 11)
             {
-                log.Warning("Table info query failed due to corruption, assuming column {ColumnName} missing", name);
+                log.Warning("Table info query failed due to corruption, assuming column {ColumnName} missing in {TableName}", name, tableName);
                 return false;
             }
         }
@@ -74,6 +74,16 @@ public static class SqliteSchemaUpgrader
         if (added.Count > 0)
             log.Information("SqliteSchemaUpgrader: Added columns to TaskIdMap: {Columns}", added);
 
+        // Also ensure TableSyncStates has SyncTracker column
+        if (!HasCol("TableSyncStates", "SyncTracker"))
+        {
+            AddCol("ALTER TABLE TableSyncStates ADD COLUMN SyncTracker TEXT DEFAULT 'No';");
+            added.Add("TableSyncStates.SyncTracker");
+        }
+
+        if (added.Count > 0)
+            log.Information("SqliteSchemaUpgrader: Added columns: {Columns}", added);
+
         // HANDLE INDEXES AFTER COLUMNS ARE ADDED
         try
         {
@@ -92,6 +102,36 @@ public static class SqliteSchemaUpgrader
         log.Information("Database changes checkpointed to main file");
     }
 
+    public static void EnsureSyncTrackerColumn(string dbPath, Serilog.ILogger logger)
+    {
+        using var conn = new SqliteConnection($"Data Source={dbPath}");
+        conn.Open();
+
+        // Check if SyncTracker column exists
+        using var checkCmd = conn.CreateCommand();
+        checkCmd.CommandText = "PRAGMA table_info(TableSyncStates)";
+        using var reader = checkCmd.ExecuteReader();
+
+        bool hasSyncTracker = false;
+        while (reader.Read())
+        {
+            if (reader.GetString(1) == "SyncTracker") // Column name is in index 1
+            {
+                hasSyncTracker = true;
+                break;
+            }
+        }
+        reader.Close();
+
+        if (!hasSyncTracker)
+        {
+            using var alterCmd = conn.CreateCommand();
+            alterCmd.CommandText = "ALTER TABLE TableSyncStates ADD COLUMN SyncTracker TEXT DEFAULT 'Yes'";
+            alterCmd.ExecuteNonQuery();
+            logger.Information("Added SyncTracker column to TableSyncStates with default 'Yes'");
+        }
+    }
+
     private static void EnsureChaserIndexes(SqliteConnection conn, Serilog.ILogger log)
     {
         var requiredIndexes = new Dictionary<string, string>
@@ -102,7 +142,9 @@ public static class SqliteSchemaUpgrader
             ["IX_TaskIdMap_SpItemId"] = "CREATE UNIQUE INDEX IF NOT EXISTS IX_TaskIdMap_SpItemId ON TaskIdMap(SpItemId)",
             ["IX_TaskIdMap_TeamId_ChannelId"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_TeamId_ChannelId ON TaskIdMap(TeamId, ChannelId)",
             ["IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId ON TaskIdMap(CustomerId, PhaseName, TaskName, WorkflowId)",
-            ["IX_TaskIdMap_Status"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_Status ON TaskIdMap(Status)"
+            ["IX_TaskIdMap_Status"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_Status ON TaskIdMap(Status)",
+
+            ["IX_TableSyncStates_SyncTracker"] = "CREATE INDEX IF NOT EXISTS IX_TableSyncStates_SyncTracker ON TableSyncStates(SyncTracker)"
         };
 
         bool IndexExists(string indexName)

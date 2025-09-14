@@ -45,5 +45,6 @@ public class TaskIdMap
     public DateTimeOffset? LastChaseAtUtc { get; set; }
     public string? Region { get; set; }
     public string? AnchorDateType { get; set; }
+    public string? Status { get; set; }
 
 }
