@@ -75,7 +75,7 @@ public static class SqliteSchemaUpgrader
             log.Information("SqliteSchemaUpgrader: Added columns to TaskIdMap: {Columns}", added);
 
         // Also ensure TableSyncStates has SyncTracker column
-        if (!HasCol("TableSyncStates", "SyncTracker"))
+        if (!HasCol("SyncTracker", "TableSyncStates"))
         {
             AddCol("ALTER TABLE TableSyncStates ADD COLUMN SyncTracker TEXT DEFAULT 'No';");
             added.Add("TableSyncStates.SyncTracker");

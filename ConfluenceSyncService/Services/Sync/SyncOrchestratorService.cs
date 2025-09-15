@@ -432,6 +432,9 @@ namespace ConfluenceSyncService.Services.Sync
                 it.Fields.TryGetValue(fCustomerWiki, out var wikiVal);
                 var customerName = NameFromWikiOrTitle(wikiVal, title);
 
+                // Updates the DB Table 'TableSyncTracker' and Column 'SyncTracker'
+                await UpdateTableSyncTrackerAsync(customerName, syncVal, cancellationToken);
+
                 var phaseId = await GetOrCreatePhaseIdAsync(siteId, phaseTasksListName, customerId, phaseName, goLive, cancellationToken);
                 _logger.Information("phase.resolve {customerId} {phaseId}", customerId, phaseId);
 
@@ -647,8 +650,32 @@ namespace ConfluenceSyncService.Services.Sync
                         var channelId = StartupConfiguration.TeamsConfiguration?.ChannelId;
 
                         foreach (var record in recordsNeedingHealing)
+                        {
+                            // Look up the activity spec for this task to get StartOffsetDays
+                            var activity = activities.FirstOrDefault(a => a.TaskName == record.TaskName);
+                            if (activity == null)
+                            {
+                                _logger.Warning("Self-healing: Could not find activity spec for TaskId {TaskId}, TaskName {TaskName}",
+                                    record.TaskId, record.TaskName);
+                                continue;
+                            }
 
-                            await _dbContext.SaveChangesAsync(ct);
+                            var dueDate = CalculateTaskDueDate(goLive, hypercareEnd, record.AnchorDateType,
+                                activity.StartOffsetDays);
+
+                            if (dueDate.HasValue)
+                            {
+                                record.NextChaseAtUtcCached = dueDate.Value;
+                                record.TeamId = teamId;
+                                record.ChannelId = channelId;
+                                record.Region = region;
+
+                                _logger.Information("Self-healing TaskId {TaskId}: populated notification fields, due={DueDate}",
+                                    record.TaskId, dueDate.Value);
+                            }
+                        }
+
+                        await _dbContext.SaveChangesAsync(ct);
                         _logger.Information("Self-healing completed for customer {CustomerId}: {Count} records updated",
                             customerId, recordsNeedingHealing.Count);
                     }
@@ -1023,6 +1050,31 @@ namespace ConfluenceSyncService.Services.Sync
 
             _logger.Debug("SharePoint item {ItemId} does not need Confluence sync", spItem.Id);
             return false;
+        }
+
+        private async Task UpdateTableSyncTrackerAsync(string customerName, string syncTrackerValue, CancellationToken ct)
+        {
+            var syncState = await _dbContext.TableSyncStates
+                .FirstOrDefaultAsync(s => s.CustomerName == customerName, ct);
+
+            if (syncState != null)
+            {
+                var normalizedValue = syncTrackerValue?.ToLowerInvariant() switch
+                {
+                    "true" => "Yes",
+                    "yes" => "Yes",
+                    "1" => "Yes",
+                    _ => "No"
+                };
+
+                if (syncState.SyncTracker != normalizedValue)
+                {
+                    syncState.SyncTracker = normalizedValue;
+                    syncState.UpdatedAt = DateTime.UtcNow;
+                    await _dbContext.SaveChangesAsync(ct);
+                    _logger.Information("Updated SyncTracker for {CustomerName}: {Value}", customerName, normalizedValue);
+                }
+            }
         }
 
         private async Task SyncToSharePoint(ConfluenceTableRow confluenceRow, TableSyncState syncState, string siteId, string listName)
