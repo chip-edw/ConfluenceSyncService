@@ -2,6 +2,7 @@ namespace ConfluenceSyncService.Options;
 
 public sealed class ChaserJobOptions
 {
+    public bool DryRun { get; set; } = false; // Default to false for production
     public bool Enabled { get; set; } = false;
     public int CadenceMinutes { get; set; } = 15;
     public int BatchSize { get; set; } = 50;

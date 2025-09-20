@@ -6,7 +6,6 @@ using ConfluenceSyncService.Teams;
 using ConfluenceSyncService.Time;
 using ConfluenceSyncService.Utilities;
 using Microsoft.Extensions.Options;
-using Serilog;
 
 namespace ConfluenceSyncService.Scheduler;
 
@@ -98,14 +97,36 @@ public sealed class ChaserJobHostedService : BackgroundService
 
     private async Task RunOnceAsync(CancellationToken ct)
     {
+        // Set in appsettings.json in the chaserJobOptions. True is used to prevent any Teams/SP updates while testing
+        bool dryRunMode = _opts.DryRun;
+
         // 1) fetch candidates from SQLite cache
         var due = await SqliteQueries.GetDueChaserCandidatesAsync(_dbPath, _opts.BatchSize, _log, ct);
         _log.Information("SqliteCandidateFetch count={Count}", due.Count);
+
+        // DEBUGGING LOGGING:
+        _log.Debug("=== DEBUGGING: All Due Candidates ===");
+        foreach (var task in due)
+        {
+            _log.Debug("DueTask: TaskId={TaskId}, TaskName={TaskName}, SpItemId={SpItemId}",
+                task.TaskId, task.TaskName, task.SpItemId);
+        }
+        _log.Debug("=== END DEBUG LIST ===");
+
         if (due.Count == 0) return;
 
-        foreach (var t in due)
+        // WORKFLOW DEPENDENCY FILTERING:
+        var filteredTasks = ApplyWorkflowDependencyFilter(due);
+        _log.Information("WorkflowFiltering: Original={Original}, Filtered={Filtered}", due.Count, filteredTasks.Count);
+
+        foreach (var task in filteredTasks)
         {
-            Log.Information("Processing task: TaskId={TaskId}, TeamId={TeamId}, ChannelId={ChannelId}, RootMessageId={RootMessageId}," +
+            _log.Debug("FilteredTask: TaskId={TaskId}, TaskName={TaskName}", task.TaskId, task.TaskName);
+        }
+
+        foreach (var t in filteredTasks) // Changed from 'due' to 'filteredTasks'
+        {
+            _log.Information("Processing task: TaskId={TaskId}, TeamId={TeamId}, ChannelId={ChannelId}, RootMessageId={RootMessageId}," +
                 " SpItemId={SpItemId}", t.TaskId, t.TeamId, t.ChannelId, t.RootMessageId, t.SpItemId);
 
             ct.ThrowIfCancellationRequested();
@@ -133,7 +154,7 @@ public sealed class ChaserJobHostedService : BackgroundService
             // 3) business-day send window
             var inWindow = BusinessDayHelper.IsWithinWindow(t.Region, _opts.BusinessWindow.StartHourLocal, _opts.BusinessWindow.EndHourLocal, _opts.BusinessWindow.CushionHours, DateTimeOffset.UtcNow);
             var nextSendUtc = BusinessDayHelper.NextBusinessDayAtHourUtc(t.Region, _opts.SendHourLocal, DateTimeOffset.UtcNow);
-            _log.Information("ChaserWindowCheck taskId={TaskId} inWindow={InWindow} nextSendUtc={Next}", t.TaskId, inWindow, nextSendUtc);
+            _log.Debug("ChaserWindowCheck taskId={TaskId} inWindow={InWindow} nextSendUtc={Next}", t.TaskId, inWindow, nextSendUtc);
             //if (!inWindow)
             //{
             //    await SqliteQueries.UpdateNextChaseCachedAsync(_dbPath, t.TaskId, nextSendUtc, _log, ct);
@@ -153,8 +174,17 @@ public sealed class ChaserJobHostedService : BackgroundService
             var ttl = expires - DateTimeOffset.UtcNow;
 
             var ackUrl = BuildAckUrl(t.TaskId, t.Region, t.AnchorDateType, expires, newVersion);
-            _log.Information("AckLinkRotate taskId={TaskId} oldVersion={Old} newVersion={New} ttlHours={Ttl} expUtc={Exp}",
+            _log.Debug("AckLinkRotate taskId={TaskId} oldVersion={Old} newVersion={New} ttlHours={Ttl} expUtc={Exp}",
                 t.TaskId, t.AckVersion, newVersion, ttl.TotalHours, expires);
+
+            if (dryRunMode)
+            {
+                _log.Information("DRY RUN: Would send Teams notification for TaskId={TaskId}, TaskName={TaskName}",
+                    t.TaskId, t.TaskName);
+                _log.Information("DRY RUN: Would update SP ItemId={SpItemId}", t.SpItemId);
+                _log.Information("DRY RUN: Would update SQLite for TaskId={TaskId}", t.TaskId);
+                continue; // Skip to next task without doing any updates
+            }
 
             // 5) post to Teams thread (short text + card)
             var overdueText = $"OVERDUE: {t.TaskName} was due {statusDue.DueDateUtc?.ToLocalTime():g}. Please review and ACK.";
@@ -171,13 +201,13 @@ public sealed class ChaserJobHostedService : BackgroundService
                 continue;
             }
 
-            _log.Information("Attempting SharePoint update for taskId={TaskId}", t.TaskId);
+            _log.Debug("Attempting SharePoint update for taskId={TaskId}", t.TaskId);
 
             // 6) write-through to SP (Important=true, ChaseCount+1, NextChaseAtUtc=nextUtc)
             await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: true, nextChaseAtUtc: nextUtc, ct);
             _log.Information("SpUpdateSuccess taskId={TaskId} spItemId={SpItemId} nextChaseAtUtc={Next}", t.TaskId, t.SpItemId, nextUtc);
 
-            _log.Information("Attempting SQLite update for taskId={TaskId} newVersion={Version} expires={Expires}",
+            _log.Debug("Attempting SQLite update for taskId={TaskId} newVersion={Version} expires={Expires}",
                 t.TaskId, newVersion, expires);
 
             // 7) mirror to SQLite
@@ -225,5 +255,22 @@ public sealed class ChaserJobHostedService : BackgroundService
         // Fallback: packaged DB under ./DB (matches your EF registration fallback)
         var fallbackPath = Path.Combine(contentRootPath, "DB", "ConfluenceSyncServiceDB.db");
         return fallbackPath;
+    }
+
+    private List<SqliteQueries.DueCandidate> ApplyWorkflowDependencyFilter(List<SqliteQueries.DueCandidate> allDueTasks)
+    {
+        // Check if any "Gentle Chaser - PM Ensure Prepared" tasks exist
+        var pmEnsurePreparedTasks = allDueTasks
+            .Where(t => t.TaskName.Contains("Gentle Chaser - PM Ensure Prepared", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (pmEnsurePreparedTasks.Any())
+        {
+            _log.Information("WorkflowFilter: Found {Count} PM Ensure Prepared tasks. Blocking all other tasks.", pmEnsurePreparedTasks.Count);
+            return pmEnsurePreparedTasks; // Only process PM tasks, block everything else
+        }
+
+        _log.Information("WorkflowFilter: No PM Ensure Prepared tasks found. Processing all {Count} due tasks.", allDueTasks.Count);
+        return allDueTasks; // No PM tasks due, process everything normally
     }
 }
