@@ -14,7 +14,9 @@ public static class SqliteQueries
         string TeamId,
         string ChannelId,
         string RootMessageId,
-        int AckVersion);
+        int AckVersion,
+        string CustomerId,           // NEW: For grouping by customer
+        int? StartOffsetDays);       // NEW: For sequential group ordering
 
     public static async Task<List<DueCandidate>> GetDueChaserCandidatesAsync(string dbPath, int limit, Serilog.ILogger log, CancellationToken ct)
     {
@@ -22,7 +24,10 @@ public static class SqliteQueries
         await conn.OpenAsync(ct);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
- SELECT TaskId, SpItemId, TaskName, Region, AnchorDateType, TeamId, ChannelId, RootMessageId, IFNULL(AckVersion,0) as AckVersion
+ SELECT TaskId, SpItemId, TaskName, Region, AnchorDateType, TeamId, ChannelId, RootMessageId, 
+        IFNULL(AckVersion,0) as AckVersion, 
+        IFNULL(CustomerId,'') as CustomerId,
+        StartOffsetDays
  FROM TaskIdMap
  WHERE NextChaseAtUtcCached IS NOT NULL
    AND datetime(NextChaseAtUtcCached) <= datetime('now')
@@ -36,19 +41,65 @@ public static class SqliteQueries
         while (await rdr.ReadAsync(ct))
         {
             list.Add(new DueCandidate(
-                rdr.GetInt64(0),
-                rdr.GetInt64(1),
-                rdr.IsDBNull(2) ? "" : rdr.GetString(2),
-                rdr.IsDBNull(3) ? "" : rdr.GetString(3),
-                rdr.IsDBNull(4) ? "" : rdr.GetString(4),
-                rdr.IsDBNull(5) ? "" : rdr.GetString(5),
-                rdr.IsDBNull(6) ? "" : rdr.GetString(6),
-                rdr.IsDBNull(7) ? "" : rdr.GetString(7),
-                rdr.GetInt32(8)
+                rdr.GetInt64(0),                                        // TaskId
+                rdr.GetInt64(1),                                        // SpItemId
+                rdr.IsDBNull(2) ? "" : rdr.GetString(2),               // TaskName
+                rdr.IsDBNull(3) ? "" : rdr.GetString(3),               // Region
+                rdr.IsDBNull(4) ? "" : rdr.GetString(4),               // AnchorDateType
+                rdr.IsDBNull(5) ? "" : rdr.GetString(5),               // TeamId
+                rdr.IsDBNull(6) ? "" : rdr.GetString(6),               // ChannelId
+                rdr.IsDBNull(7) ? "" : rdr.GetString(7),               // RootMessageId
+                rdr.GetInt32(8),                                        // AckVersion
+                rdr.IsDBNull(9) ? "" : rdr.GetString(9),               // CustomerId
+                rdr.IsDBNull(10) ? null : rdr.GetInt32(10)             // StartOffsetDays
             ));
         }
         return list;
     }
+
+    /// <summary>
+    /// Gets all tasks for a specific customer and anchor date type to check group completion status.
+    /// Used by sequential dependency filtering.
+    /// </summary>
+    public static async Task<List<GroupTaskStatus>> GetGroupTaskStatusAsync(
+        string dbPath,
+        string customerId,
+        string anchorDateType,
+        int startOffsetDays,
+        Serilog.ILogger log,
+        CancellationToken ct)
+    {
+        using var conn = new SqliteConnection($"Data Source={dbPath};");
+        await conn.OpenAsync(ct);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+ SELECT TaskId, TaskName, IFNULL(Status, 'Not Started') as Status, StartOffsetDays
+ FROM TaskIdMap
+ WHERE CustomerId = $customerId
+   AND AnchorDateType = $anchorDateType
+   AND StartOffsetDays = $startOffsetDays
+   AND State = 'linked'
+ ORDER BY TaskName;";
+
+        cmd.Parameters.AddWithValue("$customerId", customerId);
+        cmd.Parameters.AddWithValue("$anchorDateType", anchorDateType);
+        cmd.Parameters.AddWithValue("$startOffsetDays", startOffsetDays);
+
+        var list = new List<GroupTaskStatus>();
+        using var rdr = await cmd.ExecuteReaderAsync(ct);
+        while (await rdr.ReadAsync(ct))
+        {
+            list.Add(new GroupTaskStatus(
+                rdr.GetInt64(0),                    // TaskId
+                rdr.GetString(1),                   // TaskName
+                rdr.GetString(2),                   // Status
+                rdr.IsDBNull(3) ? 0 : rdr.GetInt32(3) // StartOffsetDays
+            ));
+        }
+        return list;
+    }
+
+    public sealed record GroupTaskStatus(long TaskId, string TaskName, string Status, int StartOffsetDays);
 
     public static async Task UpdateTaskStatusAsync(string dbPath, long taskId, string status, Serilog.ILogger log, CancellationToken ct)
     {
@@ -100,5 +151,23 @@ public static class SqliteQueries
         await cmd.ExecuteNonQueryAsync(ct);
         log.Information("SqliteUpdateSuccess taskId={TaskId} ackVersion={Ver} ackExpiresUtc={Exp} nextChaseAtUtcCached={Next}",
         taskId, newAckVersion, ackExpiresUtc, nextChaseUtc);
+    }
+
+    /// <summary>
+    /// Updates the StartOffsetDays field for a task. Used during sync operations.
+    /// </summary>
+    public static async Task UpdateStartOffsetDaysAsync(string dbPath, long taskId, int startOffsetDays, Serilog.ILogger log, CancellationToken ct)
+    {
+        using var conn = new SqliteConnection($"Data Source={dbPath};");
+        await conn.OpenAsync(ct);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+ UPDATE TaskIdMap
+ SET StartOffsetDays = $startOffsetDays
+ WHERE TaskId = $taskId;";
+        cmd.Parameters.AddWithValue("$startOffsetDays", startOffsetDays);
+        cmd.Parameters.AddWithValue("$taskId", taskId);
+        await cmd.ExecuteNonQueryAsync(ct);
+        log.Information("StartOffsetDaysUpdate taskId={TaskId} startOffsetDays={StartOffsetDays}", taskId, startOffsetDays);
     }
 }

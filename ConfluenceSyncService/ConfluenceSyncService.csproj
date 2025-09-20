@@ -10,8 +10,8 @@
 
         <!-- VERSION PROPERTIES: -->
         <Version>1.2.0</Version>
-        <AssemblyVersion>1.2.0.2</AssemblyVersion>
-        <FileVersion>1.2.0.2</FileVersion>
+        <AssemblyVersion>1.2.0.4</AssemblyVersion>
+        <FileVersion>1.2.0.4</FileVersion>
     </PropertyGroup>
 
     <!-- Enable ASP.NET Core (controllers/routing/Kestrel) while staying on Worker SDK -->

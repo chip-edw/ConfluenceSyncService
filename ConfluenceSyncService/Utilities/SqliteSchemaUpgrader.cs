@@ -71,6 +71,14 @@ public static class SqliteSchemaUpgrader
             AddCol("ALTER TABLE TaskIdMap ADD COLUMN Status TEXT NULL;");
             added.Add("Status");
         }
+
+        // NEW: Add StartOffsetDays for sequential workflow dependency filtering
+        if (!HasCol("StartOffsetDays"))
+        {
+            AddCol("ALTER TABLE TaskIdMap ADD COLUMN StartOffsetDays INTEGER NULL;");
+            added.Add("StartOffsetDays");
+        }
+
         if (added.Count > 0)
             log.Information("SqliteSchemaUpgrader: Added columns to TaskIdMap: {Columns}", added);
 
@@ -144,6 +152,10 @@ public static class SqliteSchemaUpgrader
             ["IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId ON TaskIdMap(CustomerId, PhaseName, TaskName, WorkflowId)",
             ["IX_TaskIdMap_Status"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_Status ON TaskIdMap(Status)",
 
+            // NEW: Indexes for sequential workflow dependency filtering
+            ["IX_TaskIdMap_CustomerId_AnchorDateType_StartOffsetDays"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_CustomerId_AnchorDateType_StartOffsetDays ON TaskIdMap(CustomerId, AnchorDateType, StartOffsetDays)",
+            ["IX_TaskIdMap_StartOffsetDays"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_StartOffsetDays ON TaskIdMap(StartOffsetDays)",
+
             ["IX_TableSyncStates_SyncTracker"] = "CREATE INDEX IF NOT EXISTS IX_TableSyncStates_SyncTracker ON TableSyncStates(SyncTracker)"
         };
 
@@ -183,7 +195,9 @@ public static class SqliteSchemaUpgrader
             "IX_TaskIdMap_SpItemId",
             "IX_TaskIdMap_TeamId_ChannelId",
             "IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId",
-            "IX_TaskIdMap_Status"
+            "IX_TaskIdMap_Status",
+            "IX_TaskIdMap_CustomerId_AnchorDateType_StartOffsetDays",
+            "IX_TaskIdMap_StartOffsetDays"
         };
 
         // Drop all potentially corrupted indexes
@@ -210,7 +224,9 @@ public static class SqliteSchemaUpgrader
             "CREATE UNIQUE INDEX IX_TaskIdMap_SpItemId ON TaskIdMap(SpItemId)",
             "CREATE INDEX IX_TaskIdMap_TeamId_ChannelId ON TaskIdMap(TeamId, ChannelId)",
             "CREATE INDEX IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId ON TaskIdMap(CustomerId, PhaseName, TaskName, WorkflowId)",
-            "CREATE INDEX IX_TaskIdMap_Status ON TaskIdMap(Status)"
+            "CREATE INDEX IX_TaskIdMap_Status ON TaskIdMap(Status)",
+            "CREATE INDEX IX_TaskIdMap_CustomerId_AnchorDateType_StartOffsetDays ON TaskIdMap(CustomerId, AnchorDateType, StartOffsetDays)",
+            "CREATE INDEX IX_TaskIdMap_StartOffsetDays ON TaskIdMap(StartOffsetDays)"
         };
 
         var repaired = new List<string>();

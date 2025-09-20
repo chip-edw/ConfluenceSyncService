@@ -108,20 +108,21 @@ public sealed class ChaserJobHostedService : BackgroundService
         _log.Debug("=== DEBUGGING: All Due Candidates ===");
         foreach (var task in due)
         {
-            _log.Debug("DueTask: TaskId={TaskId}, TaskName={TaskName}, SpItemId={SpItemId}",
-                task.TaskId, task.TaskName, task.SpItemId);
+            _log.Debug("DueTask: TaskId={TaskId}, TaskName={TaskName}, SpItemId={SpItemId}, CustomerId={CustomerId}, StartOffsetDays={StartOffsetDays}",
+                task.TaskId, task.TaskName, task.SpItemId, task.CustomerId, task.StartOffsetDays);
         }
         _log.Debug("=== END DEBUG LIST ===");
 
         if (due.Count == 0) return;
 
-        // WORKFLOW DEPENDENCY FILTERING:
-        var filteredTasks = ApplyWorkflowDependencyFilter(due);
+        // SEQUENTIAL WORKFLOW DEPENDENCY FILTERING:
+        var filteredTasks = await ApplyWorkflowDependencyFilterAsync(due, ct);
         _log.Information("WorkflowFiltering: Original={Original}, Filtered={Filtered}", due.Count, filteredTasks.Count);
 
         foreach (var task in filteredTasks)
         {
-            _log.Debug("FilteredTask: TaskId={TaskId}, TaskName={TaskName}", task.TaskId, task.TaskName);
+            _log.Debug("FilteredTask: TaskId={TaskId}, TaskName={TaskName}, CustomerId={CustomerId}, StartOffsetDays={StartOffsetDays}",
+                task.TaskId, task.TaskName, task.CustomerId, task.StartOffsetDays);
         }
 
         foreach (var t in filteredTasks) // Changed from 'due' to 'filteredTasks'
@@ -216,6 +217,145 @@ public sealed class ChaserJobHostedService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Implements sequential workflow dependency filtering.
+    /// Groups tasks by (CustomerId, AnchorDateType, StartOffsetDays) and ensures groups complete sequentially.
+    /// </summary>
+    private async Task<List<SqliteQueries.DueCandidate>> ApplyWorkflowDependencyFilterAsync(
+        List<SqliteQueries.DueCandidate> allDueTasks,
+        CancellationToken ct)
+    {
+        if (allDueTasks.Count == 0)
+        {
+            _log.Information("WorkflowFilter: No due tasks to filter");
+            return allDueTasks;
+        }
+
+        _log.Information("WorkflowFilter: Applying sequential dependency filtering to {Count} due tasks", allDueTasks.Count);
+
+        var eligibleTasks = new List<SqliteQueries.DueCandidate>();
+
+        // Group by customer and anchor date type for independent workflow streams
+        var customerGroups = allDueTasks
+            .Where(t => !string.IsNullOrWhiteSpace(t.CustomerId))
+            .GroupBy(t => new { t.CustomerId, t.AnchorDateType })
+            .ToList();
+
+        _log.Information("WorkflowFilter: Found {GroupCount} customer workflow streams", customerGroups.Count());
+
+        foreach (var customerGroup in customerGroups)
+        {
+            var key = customerGroup.Key;
+            var customerTasks = customerGroup.ToList();
+
+            _log.Debug("WorkflowFilter: Processing customer {CustomerId}, anchor {AnchorType} with {TaskCount} due tasks",
+                key.CustomerId, key.AnchorDateType, customerTasks.Count);
+
+            try
+            {
+                var eligibleForCustomer = await ProcessCustomerWorkflowAsync(
+                    key.CustomerId,
+                    key.AnchorDateType,
+                    customerTasks,
+                    ct);
+
+                eligibleTasks.AddRange(eligibleForCustomer);
+            }
+            catch (Exception ex)
+            {
+                _log.Error(ex, "WorkflowFilter: Error processing workflow for customer {CustomerId}, anchor {AnchorType}. Skipping this customer.",
+                    key.CustomerId, key.AnchorDateType);
+            }
+        }
+
+        // Handle tasks with missing CustomerId or StartOffsetDays (fallback to old behavior for these)
+        var orphanedTasks = allDueTasks
+            .Where(t => string.IsNullOrWhiteSpace(t.CustomerId) || !t.StartOffsetDays.HasValue)
+            .ToList();
+
+        if (orphanedTasks.Count > 0)
+        {
+            _log.Warning("WorkflowFilter: Found {Count} tasks with missing workflow metadata. Adding to eligible tasks without dependency checking.",
+                orphanedTasks.Count);
+            eligibleTasks.AddRange(orphanedTasks);
+        }
+
+        _log.Information("WorkflowFilter: Sequential filtering complete. Original={Original}, Eligible={Eligible}",
+            allDueTasks.Count, eligibleTasks.Count);
+
+        return eligibleTasks;
+    }
+
+    /// <summary>
+    /// Processes workflow dependencies for a single customer's workflow stream.
+    /// Returns only tasks from the earliest incomplete group that is eligible to run.
+    /// </summary>
+    private async Task<List<SqliteQueries.DueCandidate>> ProcessCustomerWorkflowAsync(
+        string customerId,
+        string anchorDateType,
+        List<SqliteQueries.DueCandidate> customerTasks,
+        CancellationToken ct)
+    {
+        // Group tasks by StartOffsetDays (workflow groups)
+        var offsetGroups = customerTasks
+            .Where(t => t.StartOffsetDays.HasValue)
+            .GroupBy(t => t.StartOffsetDays!.Value)
+            .OrderBy(g => g.Key) // Sequential order: earliest offset first
+            .ToList();
+
+        if (offsetGroups.Count == 0)
+        {
+            _log.Warning("WorkflowFilter: Customer {CustomerId} has no tasks with valid StartOffsetDays", customerId);
+            return new List<SqliteQueries.DueCandidate>();
+        }
+
+        _log.Debug("WorkflowFilter: Customer {CustomerId} has {GroupCount} workflow groups: [{Groups}]",
+            customerId, offsetGroups.Count, string.Join(", ", offsetGroups.Select(g => $"Day {g.Key}")));
+
+        // Process groups sequentially - find first incomplete group
+        foreach (var group in offsetGroups)
+        {
+            var offsetDays = group.Key;
+            var groupTasks = group.ToList();
+
+            _log.Debug("WorkflowFilter: Checking group Day {OffsetDays} with {TaskCount} due tasks",
+                offsetDays, groupTasks.Count);
+
+            // Check if ALL tasks in this group are completed
+            var groupStatus = await SqliteQueries.GetGroupTaskStatusAsync(
+                _dbPath, customerId, anchorDateType, offsetDays, _log, ct);
+
+            var completedTasks = groupStatus.Count(t =>
+                string.Equals(t.Status, "Completed", StringComparison.OrdinalIgnoreCase));
+
+            var totalTasksInGroup = groupStatus.Count;
+
+            _log.Debug("WorkflowFilter: Group Day {OffsetDays} status: {Completed}/{Total} tasks completed",
+                offsetDays, completedTasks, totalTasksInGroup);
+
+            // If the group is incomplete, check if it's eligible to run
+            if (completedTasks < totalTasksInGroup)
+            {
+                _log.Information("WorkflowFilter: Found incomplete group Day {OffsetDays} for customer {CustomerId}. " +
+                    "Group has {Due} due tasks. This blocks all subsequent groups.",
+                    offsetDays, customerId, groupTasks.Count);
+
+                // Return only the due tasks from this group (first incomplete group)
+                return groupTasks;
+            }
+            else
+            {
+                _log.Information("WorkflowFilter: Group Day {OffsetDays} for customer {CustomerId} is complete ({Completed}/{Total}). " +
+                    "Checking next group.", offsetDays, customerId, completedTasks, totalTasksInGroup);
+            }
+        }
+
+        // All groups are complete - no tasks are eligible (workflow finished)
+        _log.Information("WorkflowFilter: All workflow groups complete for customer {CustomerId}. No eligible tasks.",
+            customerId);
+        return new List<SqliteQueries.DueCandidate>();
+    }
+
     private string BuildAckUrl(long taskId, string? region, string? anchorDateType, DateTimeOffset expiresUtc, int ackVersion)
     {
         var baseUrl = (_signerOpts.BaseUrl ??
@@ -257,8 +397,13 @@ public sealed class ChaserJobHostedService : BackgroundService
         return fallbackPath;
     }
 
+    /// <summary>
+    /// DEPRECATED: Old synchronous filtering method. Kept for reference during migration.
+    /// </summary>
     private List<SqliteQueries.DueCandidate> ApplyWorkflowDependencyFilter(List<SqliteQueries.DueCandidate> allDueTasks)
     {
+        _log.Warning("Using deprecated ApplyWorkflowDependencyFilter. Should migrate to async version.");
+
         // Check if any "Gentle Chaser - PM Ensure Prepared" tasks exist
         var pmEnsurePreparedTasks = allDueTasks
             .Where(t => t.TaskName.Contains("Gentle Chaser - PM Ensure Prepared", StringComparison.OrdinalIgnoreCase))

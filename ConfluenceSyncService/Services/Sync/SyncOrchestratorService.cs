@@ -1,3 +1,4 @@
+using ConfluenceSyncService.Data;
 using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
 using ConfluenceSyncService.Services.Clients;
@@ -22,6 +23,7 @@ namespace ConfluenceSyncService.Services.Sync
         private readonly Serilog.ILogger _logger;
         private readonly ITaskIdIssuer _taskIdIssuer;
         private readonly IHostEnvironment _environment;
+        private readonly string _dbPath;
 
         // Single source-of-truth path for the workflow template JSON (no fallback).
         // You can override via appsettings: "Workflow:TemplatePath"
@@ -48,6 +50,10 @@ namespace ConfluenceSyncService.Services.Sync
             _taskIdIssuer = taskIdIssuer;
             _logger = Log.ForContext<SyncOrchestratorService>();
             _environment = environment;
+
+            // Extract SQLite database path for StartOffsetDays updates
+            var cs = _configuration.GetConnectionString("ConfluenceSync");
+            _dbPath = ExtractSqlitePathOrFallback(cs, _environment.ContentRootPath);
         }
 
         public async Task RunSyncAsync(CancellationToken cancellationToken)
@@ -595,6 +601,102 @@ namespace ConfluenceSyncService.Services.Sync
             return string.Join("-", words);
         }
 
+        /// <summary>
+        /// Enhanced self-healing that populates missing StartOffsetDays and notification fields
+        /// </summary>
+        private async Task EnhancedSelfHealingWithWorkflowFields(
+            string customerId,
+            string customerName,
+            IReadOnlyList<ActivitySpec> activities,
+            string region,
+            DateTimeOffset? goLive,
+            DateTimeOffset? hypercareEnd,
+            CancellationToken ct)
+        {
+            try
+            {
+                var recordsNeedingHealing = await _dbContext.TaskIdMaps
+                    .Where(x => x.CustomerId == customerId
+                             && x.State == "linked"
+                             && (x.NextChaseAtUtcCached == null
+                                 || x.TeamId == null
+                                 || x.ChannelId == null
+                                 || x.StartOffsetDays == null)  // NEW: Also heal missing StartOffsetDays
+                             && (x.Status == null || x.Status != "Completed"))
+                    .ToListAsync(ct);
+
+                if (recordsNeedingHealing.Any())
+                {
+                    // Check customer's SyncTracker status
+                    var syncState = await _dbContext.TableSyncStates
+                        .FirstOrDefaultAsync(s => s.CustomerName == customerName, ct);
+
+                    if (syncState?.SyncTracker == "Yes")
+                    {
+                        var teamId = StartupConfiguration.TeamsConfiguration?.TeamId;
+                        var channelId = StartupConfiguration.TeamsConfiguration?.ChannelId;
+
+                        foreach (var record in recordsNeedingHealing)
+                        {
+                            // Look up the activity spec for this task to get StartOffsetDays
+                            var activity = activities.FirstOrDefault(a => a.TaskName == record.TaskName);
+                            if (activity == null)
+                            {
+                                _logger.Warning("Self-healing: Could not find activity spec for TaskId {TaskId}, TaskName {TaskName}",
+                                    record.TaskId, record.TaskName);
+                                continue;
+                            }
+
+                            // NEW: Populate StartOffsetDays if missing
+                            if (record.StartOffsetDays == null)
+                            {
+                                record.StartOffsetDays = activity.StartOffsetDays;
+                                _logger.Information("Self-healing: Populated StartOffsetDays={StartOffsetDays} for TaskId {TaskId}",
+                                    activity.StartOffsetDays, record.TaskId);
+                            }
+
+                            // Populate notification fields if missing
+                            if (record.NextChaseAtUtcCached == null)
+                            {
+                                var dueDate = CalculateTaskDueDate(goLive, hypercareEnd, record.AnchorDateType,
+                                    activity.StartOffsetDays);
+
+                                if (dueDate.HasValue)
+                                {
+                                    record.NextChaseAtUtcCached = dueDate.Value;
+                                    _logger.Information("Self-healing: Populated NextChaseAtUtcCached={DueDate} for TaskId {TaskId}",
+                                        dueDate.Value, record.TaskId);
+                                }
+                            }
+
+                            if (string.IsNullOrEmpty(record.TeamId))
+                                record.TeamId = teamId;
+                            if (string.IsNullOrEmpty(record.ChannelId))
+                                record.ChannelId = channelId;
+                            if (string.IsNullOrEmpty(record.Region))
+                                record.Region = region;
+
+                            _logger.Information("Self-healing TaskId {TaskId}: updated workflow and notification fields",
+                                record.TaskId);
+                        }
+
+                        await _dbContext.SaveChangesAsync(ct);
+                        _logger.Information("Enhanced self-healing completed for customer {CustomerId}: {Count} records updated",
+                            customerId, recordsNeedingHealing.Count);
+                    }
+                    else
+                    {
+                        _logger.Information("Self-healing skipped for customer {CustomerId}: SyncTracker={SyncTracker}",
+                            customerId, syncState?.SyncTracker ?? "null");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Enhanced self-healing failed for customer {CustomerId}", customerId);
+            }
+        }
+
         private async Task UpsertPhaseTasksAsync(
             string siteId,
             string phaseTasksListName,
@@ -627,71 +729,9 @@ namespace ConfluenceSyncService.Services.Sync
             var fHypercare = MapField("Phase Tasks & Metadata", "HypercareEndDate");
             var fStatus = MapField("Phase Tasks & Metadata", "Status");
 
-
-            // === SELF-HEALING: Detect and fix TaskIdMap records missing notification fields ===
-            try
-            {
-                var recordsNeedingHealing = await _dbContext.TaskIdMaps
-                    .Where(x => x.CustomerId == customerId
-                             && x.State == "linked"
-                             && (x.NextChaseAtUtcCached == null || x.TeamId == null || x.ChannelId == null)
-                             && (x.Status == null || x.Status != "Completed"))
-                    .ToListAsync(ct);
-
-                if (recordsNeedingHealing.Any())
-                {
-                    // Check customer's SyncTracker status
-                    var syncState = await _dbContext.TableSyncStates
-                        .FirstOrDefaultAsync(s => s.CustomerName == customerName, ct);
-
-                    if (syncState?.SyncTracker == "Yes")
-                    {
-                        var teamId = StartupConfiguration.TeamsConfiguration?.TeamId;
-                        var channelId = StartupConfiguration.TeamsConfiguration?.ChannelId;
-
-                        foreach (var record in recordsNeedingHealing)
-                        {
-                            // Look up the activity spec for this task to get StartOffsetDays
-                            var activity = activities.FirstOrDefault(a => a.TaskName == record.TaskName);
-                            if (activity == null)
-                            {
-                                _logger.Warning("Self-healing: Could not find activity spec for TaskId {TaskId}, TaskName {TaskName}",
-                                    record.TaskId, record.TaskName);
-                                continue;
-                            }
-
-                            var dueDate = CalculateTaskDueDate(goLive, hypercareEnd, record.AnchorDateType,
-                                activity.StartOffsetDays);
-
-                            if (dueDate.HasValue)
-                            {
-                                record.NextChaseAtUtcCached = dueDate.Value;
-                                record.TeamId = teamId;
-                                record.ChannelId = channelId;
-                                record.Region = region;
-
-                                _logger.Information("Self-healing TaskId {TaskId}: populated notification fields, due={DueDate}",
-                                    record.TaskId, dueDate.Value);
-                            }
-                        }
-
-                        await _dbContext.SaveChangesAsync(ct);
-                        _logger.Information("Self-healing completed for customer {CustomerId}: {Count} records updated",
-                            customerId, recordsNeedingHealing.Count);
-                    }
-                    else
-                    {
-                        _logger.Information("Self-healing skipped for customer {CustomerId}: SyncTracker={SyncTracker}",
-                            customerId, syncState?.SyncTracker ?? "null");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Self-healing failed for customer {CustomerId}", customerId);
-            }
-            // === END SELF-HEALING ===
-
+            // === ENHANCED SELF-HEALING: Detect and fix TaskIdMap records missing workflow or notification fields ===
+            await EnhancedSelfHealingWithWorkflowFields(customerId, customerName, activities, region, goLive, hypercareEnd, ct);
+            // === END ENHANCED SELF-HEALING ===
 
             foreach (var a in activities)
             {
@@ -864,6 +904,9 @@ namespace ConfluenceSyncService.Services.Sync
                     var newId = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
                     await _taskIdIssuer.LinkToSharePointAsync(mappedId.Value, newId, ct);
 
+                    // NEW: Populate StartOffsetDays in cache
+                    await SqliteQueries.UpdateStartOffsetDaysAsync(_dbPath, mappedId.Value, a.StartOffsetDays, _logger, ct);
+
                     _logger.Information("task.upsert {Correlation} created (reserved reuse) TaskId={TaskId}, ItemId={ItemId}",
                         correlation, mappedId.Value, newId);
 
@@ -890,6 +933,9 @@ namespace ConfluenceSyncService.Services.Sync
                     var id = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
 
                     await _taskIdIssuer.LinkToSharePointAsync(taskId, id, ct);
+
+                    // NEW: Populate StartOffsetDays in cache for new tasks
+                    await SqliteQueries.UpdateStartOffsetDaysAsync(_dbPath, taskId, a.StartOffsetDays, _logger, ct);
 
                     _logger.Information("task.upsert {Correlation} created {Task} with ID {ItemId}", correlation, a.TaskName, id);
                 }
@@ -1516,6 +1562,32 @@ namespace ConfluenceSyncService.Services.Sync
         {
             if (a is null || b is null) return false;
             return a.Value.UtcDateTime.Date == b.Value.UtcDateTime.Date;
+        }
+
+        private static string ExtractSqlitePathOrFallback(string? connectionString, string contentRootPath)
+        {
+            // Try to parse a Data Source / DataSource / Filename from the connection string
+            if (!string.IsNullOrWhiteSpace(connectionString))
+            {
+                foreach (var part in connectionString.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    var kv = part.Split('=', 2, StringSplitOptions.TrimEntries);
+                    if (kv.Length != 2) continue;
+                    var key = kv[0];
+                    var val = kv[1];
+                    if (key.Equals("Data Source", StringComparison.OrdinalIgnoreCase) ||
+                        key.Equals("DataSource", StringComparison.OrdinalIgnoreCase) ||
+                        key.Equals("Filename", StringComparison.OrdinalIgnoreCase) ||
+                        key.Equals("FileName", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return val;
+                    }
+                }
+            }
+
+            // Fallback: packaged DB under ./DB (matches your EF registration fallback)
+            var fallbackPath = Path.Combine(contentRootPath, "DB", "ConfluenceSyncServiceDB.db");
+            return fallbackPath;
         }
 
         #endregion
