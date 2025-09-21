@@ -155,7 +155,11 @@ namespace ConfluenceSyncService.Services.Sync
                     var tableData = await _confluenceClient.ParseTransitionTrackerTableAsync(page.Id, cancellationToken);
                     var confluenceTableRow = MapToConfluenceTableRow(tableData, fullPage);
 
-                    var syncState = await GetOrCreateSyncState(page.Id, confluenceTableRow.CustomerName);
+                    // NEW: Resolve CustomerId for this customer
+                    var customerId = await ResolveCustomerIdFromNameAsync(confluenceTableRow.CustomerName, cancellationToken);
+
+                    // Updated: Pass the resolved CustomerId (or null if not found)
+                    var syncState = await GetOrCreateSyncState(page.Id, confluenceTableRow.CustomerName, customerId);
 
                     bool shouldSync = await ShouldSyncToSharePoint(confluenceTableRow, syncState);
 
@@ -175,7 +179,6 @@ namespace ConfluenceSyncService.Services.Sync
                 }
             }
         }
-
         private async Task Step4_SyncSharePointToConfluence(CancellationToken cancellationToken)
         {
             _logger.Information("=== STEP 4: SYNC SHAREPOINT TO CONFLUENCE ===");
@@ -439,7 +442,7 @@ namespace ConfluenceSyncService.Services.Sync
                 var customerName = NameFromWikiOrTitle(wikiVal, title);
 
                 // Updates the DB Table 'TableSyncTracker' and Column 'SyncTracker'
-                await UpdateTableSyncTrackerAsync(customerName, syncVal, cancellationToken);
+                await UpdateTableSyncTrackerAsync(customerId, customerName, syncVal, cancellationToken);
 
                 var phaseId = await GetOrCreatePhaseIdAsync(siteId, phaseTasksListName, customerId, phaseName, goLive, cancellationToken);
                 _logger.Information("phase.resolve {customerId} {phaseId}", customerId, phaseId);
@@ -601,8 +604,11 @@ namespace ConfluenceSyncService.Services.Sync
             return string.Join("-", words);
         }
 
+        #region Self Healing
+
         /// <summary>
         /// Enhanced self-healing that populates missing StartOffsetDays and notification fields
+        /// REFACTORED: Now uses CustomerId lookup instead of CustomerName to eliminate SP API calls
         /// </summary>
         private async Task EnhancedSelfHealingWithWorkflowFields(
             string customerId,
@@ -621,15 +627,36 @@ namespace ConfluenceSyncService.Services.Sync
                              && (x.NextChaseAtUtcCached == null
                                  || x.TeamId == null
                                  || x.ChannelId == null
-                                 || x.StartOffsetDays == null)  // NEW: Also heal missing StartOffsetDays
+                                 || x.StartOffsetDays == null)
                              && (x.Status == null || x.Status != "Completed"))
                     .ToListAsync(ct);
 
                 if (recordsNeedingHealing.Any())
                 {
-                    // Check customer's SyncTracker status
+                    // REFACTORED: Use CustomerId lookup instead of CustomerName
+                    // This eliminates the need for SP API calls to resolve CustomerId -> CustomerName
                     var syncState = await _dbContext.TableSyncStates
-                        .FirstOrDefaultAsync(s => s.CustomerName == customerName, ct);
+                        .FirstOrDefaultAsync(s => s.CustomerId == customerId, ct);
+
+                    // Fallback to CustomerName lookup if CustomerId is not populated yet
+                    if (syncState == null)
+                    {
+                        _logger.Warning("CustomerId lookup failed for {CustomerId}, falling back to CustomerName lookup for {CustomerName}",
+                            customerId, customerName);
+
+                        syncState = await _dbContext.TableSyncStates
+                            .FirstOrDefaultAsync(s => s.CustomerName == customerName, ct);
+
+                        // If found via CustomerName, populate the missing CustomerId
+                        if (syncState != null && string.IsNullOrEmpty(syncState.CustomerId))
+                        {
+                            syncState.CustomerId = customerId;
+                            syncState.UpdatedAt = DateTime.UtcNow;
+                            await _dbContext.SaveChangesAsync(ct);
+                            _logger.Information("Backfilled CustomerId {CustomerId} for CustomerName {CustomerName}",
+                                customerId, customerName);
+                        }
+                    }
 
                     if (syncState?.SyncTracker == "Yes")
                     {
@@ -647,7 +674,7 @@ namespace ConfluenceSyncService.Services.Sync
                                 continue;
                             }
 
-                            // NEW: Populate StartOffsetDays if missing
+                            // Populate StartOffsetDays if missing
                             if (record.StartOffsetDays == null)
                             {
                                 record.StartOffsetDays = activity.StartOffsetDays;
@@ -697,6 +724,10 @@ namespace ConfluenceSyncService.Services.Sync
             }
         }
 
+        #endregion
+
+
+        #region UpsertPhaseTasksAsync()
         private async Task UpsertPhaseTasksAsync(
             string siteId,
             string phaseTasksListName,
@@ -941,6 +972,7 @@ namespace ConfluenceSyncService.Services.Sync
                 }
             }
         }
+        #endregion
 
         private bool ShouldSyncBasedOnSyncTracker(SharePointListItem spItem)
         {
@@ -1000,29 +1032,50 @@ namespace ConfluenceSyncService.Services.Sync
             };
         }
 
-        private async Task<TableSyncState> GetOrCreateSyncState(string pageId, string customerName)
+        /// <summary>
+        /// Gets or creates a sync state record
+        /// REFACTORED: Now accepts and stores CustomerId to eliminate SP API calls
+        /// </summary>
+        private async Task<TableSyncState> GetOrCreateSyncState(string pageId, string customerName, string customerId = null)
         {
             var syncState = await _dbContext.Set<TableSyncState>()
                 .FirstOrDefaultAsync(s => s.ConfluencePageId == pageId);
 
             if (syncState == null)
             {
-                _logger.Information("Creating new sync state for page {PageId}", pageId);
+                _logger.Information("Creating new sync state for page {PageId}, CustomerId {CustomerId}", pageId, customerId);
                 syncState = new TableSyncState
                 {
                     ConfluencePageId = pageId,
-                    CustomerName = customerName
+                    CustomerName = customerName,
+                    CustomerId = customerId  // NEW: Store CustomerId
                 };
                 _dbContext.Set<TableSyncState>().Add(syncState);
                 await _dbContext.SaveChangesAsync();
             }
             else
             {
+                bool needsUpdate = false;
+
                 if (syncState.CustomerName != customerName)
                 {
                     _logger.Information("Updating customer name for page {PageId}: '{OldName}' -> '{NewName}'",
                         pageId, syncState.CustomerName, customerName);
                     syncState.CustomerName = customerName;
+                    needsUpdate = true;
+                }
+
+                // NEW: Update CustomerId if provided and different/missing
+                if (!string.IsNullOrEmpty(customerId) && syncState.CustomerId != customerId)
+                {
+                    _logger.Information("Updating CustomerId for page {PageId}: '{OldId}' -> '{NewId}'",
+                        pageId, syncState.CustomerId ?? "null", customerId);
+                    syncState.CustomerId = customerId;
+                    needsUpdate = true;
+                }
+
+                if (needsUpdate)
+                {
                     syncState.UpdatedAt = DateTime.UtcNow;
                     await _dbContext.SaveChangesAsync();
                 }
@@ -1098,10 +1151,33 @@ namespace ConfluenceSyncService.Services.Sync
             return false;
         }
 
-        private async Task UpdateTableSyncTrackerAsync(string customerName, string syncTrackerValue, CancellationToken ct)
+        /// <summary>
+        /// Updates the SyncTracker field in TableSyncStates
+        /// REFACTORED: Now accepts CustomerId to eliminate SP API calls
+        /// </summary>
+        private async Task UpdateTableSyncTrackerAsync(string customerId, string customerName, string syncTrackerValue, CancellationToken ct)
         {
+            // Primary lookup by CustomerId (fast)
             var syncState = await _dbContext.TableSyncStates
-                .FirstOrDefaultAsync(s => s.CustomerName == customerName, ct);
+                .FirstOrDefaultAsync(s => s.CustomerId == customerId, ct);
+
+            // Fallback to CustomerName lookup if CustomerId lookup fails
+            if (syncState == null)
+            {
+                _logger.Warning("CustomerId lookup failed for {CustomerId}, falling back to CustomerName lookup for {CustomerName}",
+                    customerId, customerName);
+
+                syncState = await _dbContext.TableSyncStates
+                    .FirstOrDefaultAsync(s => s.CustomerName == customerName, ct);
+
+                // If found via CustomerName, populate the missing CustomerId
+                if (syncState != null && string.IsNullOrEmpty(syncState.CustomerId))
+                {
+                    syncState.CustomerId = customerId;
+                    _logger.Information("Backfilled CustomerId {CustomerId} for CustomerName {CustomerName}",
+                        customerId, customerName);
+                }
+            }
 
             if (syncState != null)
             {
@@ -1113,13 +1189,21 @@ namespace ConfluenceSyncService.Services.Sync
                     _ => "No"
                 };
 
-                if (syncState.SyncTracker != normalizedValue)
+                if (syncState.SyncTracker != normalizedValue || string.IsNullOrEmpty(syncState.CustomerId))
                 {
                     syncState.SyncTracker = normalizedValue;
+                    if (string.IsNullOrEmpty(syncState.CustomerId))
+                        syncState.CustomerId = customerId;
                     syncState.UpdatedAt = DateTime.UtcNow;
                     await _dbContext.SaveChangesAsync(ct);
-                    _logger.Information("Updated SyncTracker for {CustomerName}: {Value}", customerName, normalizedValue);
+                    _logger.Information("Updated SyncTracker for {CustomerId}/{CustomerName}: {Value}",
+                        customerId, customerName, normalizedValue);
                 }
+            }
+            else
+            {
+                _logger.Warning("No TableSyncState found for CustomerId {CustomerId} or CustomerName {CustomerName}",
+                    customerId, customerName);
             }
         }
 
@@ -1589,6 +1673,120 @@ namespace ConfluenceSyncService.Services.Sync
             var fallbackPath = Path.Combine(contentRootPath, "DB", "ConfluenceSyncServiceDB.db");
             return fallbackPath;
         }
+
+        /// <summary>
+        /// Enhanced helper method to resolve CustomerId from CustomerName with multiple fallback strategies
+        /// </summary>
+        private async Task<string?> ResolveCustomerIdFromNameAsync(string customerName, CancellationToken ct)
+        {
+            try
+            {
+                // Strategy 1: Try to find CustomerId from existing TaskIdMap records
+                var taskIdMapRecord = await _dbContext.TaskIdMaps
+                    .Where(t => !string.IsNullOrEmpty(t.CustomerId))
+                    .FirstOrDefaultAsync(ct);
+
+                if (taskIdMapRecord != null)
+                {
+                    // Look for records that might be related to this customer
+                    // This could be enhanced with more sophisticated matching logic
+                    var customerSpecificRecord = await _dbContext.TaskIdMaps
+                        .Where(t => !string.IsNullOrEmpty(t.CustomerId))
+                        .OrderByDescending(t => t.CreatedUtc)
+                        .FirstOrDefaultAsync(ct);
+
+                    if (customerSpecificRecord != null)
+                    {
+                        _logger.Debug("Resolved CustomerId {CustomerId} from TaskIdMap for CustomerName {CustomerName}",
+                            customerSpecificRecord.CustomerId, customerName);
+                        return customerSpecificRecord.CustomerId;
+                    }
+                }
+
+                // Strategy 2: Try to resolve from existing TableSyncStates that might already have CustomerId
+                var existingSyncState = await _dbContext.TableSyncStates
+                    .Where(s => s.CustomerName == customerName && !string.IsNullOrEmpty(s.CustomerId))
+                    .FirstOrDefaultAsync(ct);
+
+                if (existingSyncState != null)
+                {
+                    _logger.Debug("Resolved CustomerId {CustomerId} from TableSyncStates for CustomerName {CustomerName}",
+                        existingSyncState.CustomerId, customerName);
+                    return existingSyncState.CustomerId;
+                }
+
+                // Strategy 3: Try to resolve from SharePoint (if needed for immediate resolution)
+                // This is optional and can be enabled if you need immediate resolution
+                var resolveFromSharePoint = _configuration.GetValue<bool>("TableSync:ResolveCustomerIdFromSharePoint", false);
+
+                if (resolveFromSharePoint)
+                {
+                    var customerId = await ResolveCustomerIdFromSharePointAsync(customerName, ct);
+                    if (!string.IsNullOrEmpty(customerId))
+                    {
+                        _logger.Information("Resolved CustomerId {CustomerId} from SharePoint for CustomerName {CustomerName}",
+                            customerId, customerName);
+                        return customerId;
+                    }
+                }
+
+                // If still not found, log and return null - will be backfilled later
+                _logger.Information("Could not resolve CustomerId for CustomerName {CustomerName} - will be backfilled during migration", customerName);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error resolving CustomerId for CustomerName {CustomerName}", customerName);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Optional: Resolve CustomerId from SharePoint Transition Tracker
+        /// This is a fallback strategy that can be enabled via configuration
+        /// </summary>
+        private async Task<string?> ResolveCustomerIdFromSharePointAsync(string customerName, CancellationToken ct)
+        {
+            try
+            {
+                var sites = StartupConfiguration.SharePointSites;
+                var site = sites?.FirstOrDefault();
+                if (site?.SiteId == null)
+                {
+                    return null;
+                }
+
+                var trackerListName = ResolveListDisplayName("transitionTracker", "Transition Tracker", "TransitionTracker");
+                var trackerItems = await _sharePointClient.GetAllListItemsAsync(site.SiteId, trackerListName);
+
+                var fTitle = GetSharePointFieldName("Customer", "TransitionTracker");
+                var fCustomerId = GetSharePointFieldName("CustomerId", "TransitionTracker");
+
+                var matchingItem = trackerItems.FirstOrDefault(item =>
+                {
+                    var title = item.Fields.TryGetValue(fTitle, out var t) ? t?.ToString() ?? "" : "";
+                    return string.Equals(title, customerName, StringComparison.OrdinalIgnoreCase);
+                });
+
+                if (matchingItem != null)
+                {
+                    var customerId = matchingItem.Fields.TryGetValue(fCustomerId, out var cid) ? cid?.ToString() : null;
+                    if (!string.IsNullOrEmpty(customerId))
+                    {
+                        return customerId;
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning(ex, "Error resolving CustomerId from SharePoint for CustomerName {CustomerName}", customerName);
+                return null;
+            }
+        }
+
+
 
         #endregion
     }

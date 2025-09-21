@@ -3,7 +3,7 @@ namespace ConfluenceSyncService.Utilities;
 
 public static class SqliteSchemaUpgrader
 {
-    // Adds columns to TaskIdMap if missing (idempotent, safe to call repeatedly)
+    // Adds columns to TaskIdMap and TableSyncStates if missing (idempotent, safe to call repeatedly)
     public static void EnsureChaserColumns(string dbPath, Serilog.ILogger log)
     {
         log.Information("SqliteSchemaUpgrader: Connecting to database at {DbPath}", dbPath);
@@ -56,37 +56,45 @@ public static class SqliteSchemaUpgrader
 
         // ADD COLUMNS FIRST
         var added = new List<string>();
+
+        // === TaskIdMap columns ===
         if (!HasCol("NextChaseAtUtcCached"))
         {
             AddCol("ALTER TABLE TaskIdMap ADD COLUMN NextChaseAtUtcCached TEXT NULL;");
-            added.Add("NextChaseAtUtcCached");
+            added.Add("TaskIdMap.NextChaseAtUtcCached");
         }
         if (!HasCol("LastChaseAtUtc"))
         {
             AddCol("ALTER TABLE TaskIdMap ADD COLUMN LastChaseAtUtc TEXT NULL;");
-            added.Add("LastChaseAtUtc");
+            added.Add("TaskIdMap.LastChaseAtUtc");
         }
         if (!HasCol("Status"))
         {
             AddCol("ALTER TABLE TaskIdMap ADD COLUMN Status TEXT NULL;");
-            added.Add("Status");
+            added.Add("TaskIdMap.Status");
         }
 
         // NEW: Add StartOffsetDays for sequential workflow dependency filtering
         if (!HasCol("StartOffsetDays"))
         {
             AddCol("ALTER TABLE TaskIdMap ADD COLUMN StartOffsetDays INTEGER NULL;");
-            added.Add("StartOffsetDays");
+            added.Add("TaskIdMap.StartOffsetDays");
         }
 
-        if (added.Count > 0)
-            log.Information("SqliteSchemaUpgrader: Added columns to TaskIdMap: {Columns}", added);
-
-        // Also ensure TableSyncStates has SyncTracker column
+        // === TableSyncStates columns ===
         if (!HasCol("SyncTracker", "TableSyncStates"))
         {
             AddCol("ALTER TABLE TableSyncStates ADD COLUMN SyncTracker TEXT DEFAULT 'No';");
             added.Add("TableSyncStates.SyncTracker");
+        }
+
+        // NEW: Add CustomerId to TableSyncStates for performance optimization
+        // This eliminates the need for SharePoint API calls to resolve CustomerId -> CustomerName
+        if (!HasCol("CustomerId", "TableSyncStates"))
+        {
+            AddCol("ALTER TABLE TableSyncStates ADD COLUMN CustomerId TEXT NULL;");
+            added.Add("TableSyncStates.CustomerId");
+            log.Information("Added CustomerId column to TableSyncStates - this will eliminate unnecessary SharePoint API calls");
         }
 
         if (added.Count > 0)
@@ -144,6 +152,7 @@ public static class SqliteSchemaUpgrader
     {
         var requiredIndexes = new Dictionary<string, string>
         {
+            // === TaskIdMap indexes ===
             ["IX_TaskIdMap_NextChaseAtUtcCached"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_NextChaseAtUtcCached ON TaskIdMap(NextChaseAtUtcCached)",
             ["IX_TaskIdMap_AckExpiresUtc"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_AckExpiresUtc ON TaskIdMap(AckExpiresUtc)",
             ["IX_TaskIdMap_CorrelationId"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_CorrelationId ON TaskIdMap(CorrelationId)",
@@ -156,7 +165,13 @@ public static class SqliteSchemaUpgrader
             ["IX_TaskIdMap_CustomerId_AnchorDateType_StartOffsetDays"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_CustomerId_AnchorDateType_StartOffsetDays ON TaskIdMap(CustomerId, AnchorDateType, StartOffsetDays)",
             ["IX_TaskIdMap_StartOffsetDays"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_StartOffsetDays ON TaskIdMap(StartOffsetDays)",
 
-            ["IX_TableSyncStates_SyncTracker"] = "CREATE INDEX IF NOT EXISTS IX_TableSyncStates_SyncTracker ON TableSyncStates(SyncTracker)"
+            // === TableSyncStates indexes ===
+            ["IX_TableSyncStates_SyncTracker"] = "CREATE INDEX IF NOT EXISTS IX_TableSyncStates_SyncTracker ON TableSyncStates(SyncTracker)",
+
+            // NEW: Index for CustomerId lookup in TableSyncStates (PERFORMANCE CRITICAL)
+            // This index eliminates the need for SharePoint API calls by enabling fast CustomerId lookups
+            ["IX_TableSyncStates_CustomerId"] = "CREATE INDEX IF NOT EXISTS IX_TableSyncStates_CustomerId ON TableSyncStates(CustomerId)",
+            ["IX_TableSyncStates_CustomerName"] = "CREATE INDEX IF NOT EXISTS IX_TableSyncStates_CustomerName ON TableSyncStates(CustomerName)"
         };
 
         bool IndexExists(string indexName)
@@ -180,15 +195,16 @@ public static class SqliteSchemaUpgrader
         }
 
         if (created.Count > 0)
-            log.Information("SqliteSchemaUpgrader: Created indexes on TaskIdMap: {Indexes}", created);
+            log.Information("SqliteSchemaUpgrader: Created indexes: {Indexes}", created);
     }
 
     private static void RepairCorruptedIndexes(SqliteConnection conn, Serilog.ILogger log)
     {
-        log.Information("Repairing corrupted TaskIdMap indexes...");
+        log.Information("Repairing corrupted indexes...");
 
         var indexesToDrop = new[]
         {
+            // TaskIdMap indexes
             "IX_TaskIdMap_NextChaseAtUtcCached",
             "IX_TaskIdMap_AckExpiresUtc",
             "IX_TaskIdMap_CorrelationId",
@@ -197,7 +213,12 @@ public static class SqliteSchemaUpgrader
             "IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId",
             "IX_TaskIdMap_Status",
             "IX_TaskIdMap_CustomerId_AnchorDateType_StartOffsetDays",
-            "IX_TaskIdMap_StartOffsetDays"
+            "IX_TaskIdMap_StartOffsetDays",
+            
+            // TableSyncStates indexes
+            "IX_TableSyncStates_SyncTracker",
+            "IX_TableSyncStates_CustomerId",
+            "IX_TableSyncStates_CustomerName"
         };
 
         // Drop all potentially corrupted indexes
@@ -218,6 +239,7 @@ public static class SqliteSchemaUpgrader
         // Recreate all indexes fresh
         var recreateCommands = new[]
         {
+            // TaskIdMap indexes
             "CREATE INDEX IX_TaskIdMap_NextChaseAtUtcCached ON TaskIdMap(NextChaseAtUtcCached)",
             "CREATE INDEX IX_TaskIdMap_AckExpiresUtc ON TaskIdMap(AckExpiresUtc)",
             "CREATE INDEX IX_TaskIdMap_CorrelationId ON TaskIdMap(CorrelationId)",
@@ -226,7 +248,12 @@ public static class SqliteSchemaUpgrader
             "CREATE INDEX IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId ON TaskIdMap(CustomerId, PhaseName, TaskName, WorkflowId)",
             "CREATE INDEX IX_TaskIdMap_Status ON TaskIdMap(Status)",
             "CREATE INDEX IX_TaskIdMap_CustomerId_AnchorDateType_StartOffsetDays ON TaskIdMap(CustomerId, AnchorDateType, StartOffsetDays)",
-            "CREATE INDEX IX_TaskIdMap_StartOffsetDays ON TaskIdMap(StartOffsetDays)"
+            "CREATE INDEX IX_TaskIdMap_StartOffsetDays ON TaskIdMap(StartOffsetDays)",
+            
+            // TableSyncStates indexes
+            "CREATE INDEX IX_TableSyncStates_SyncTracker ON TableSyncStates(SyncTracker)",
+            "CREATE INDEX IX_TableSyncStates_CustomerId ON TableSyncStates(CustomerId)",
+            "CREATE INDEX IX_TableSyncStates_CustomerName ON TableSyncStates(CustomerName)"
         };
 
         var repaired = new List<string>();

@@ -4,7 +4,7 @@
     {
       "Key": "SupportTransitionPacketDeliveredT4Weeks_GentleChaserPmEnsurePrepared",
       "Category": "Support Transition Packet Delivered - T-4 weeks",
-      "TaskName": "Gentle Chaser - PM Ensure Prepared",
+      "TaskName": "Gentle Chaser - PM Ensure Preparedness",
       "Role": "Project PM",
       "AnchorDateType": "GoLive",
       "StartOffsetDays": -20,

@@ -10,7 +10,7 @@ namespace ConfluenceSyncService.Models
         public string ConfluencePageId { get; set; } = string.Empty;
         public string SharePointItemId { get; set; } = string.Empty;
         public string CustomerName { get; set; } = string.Empty;
-
+        public string? CustomerId { get; set; }
         public DateTime? LastConfluenceModifiedUtc { get; set; }
         public DateTime? LastSharePointModifiedUtc { get; set; }
         public DateTime? LastSyncedUtc { get; set; }
