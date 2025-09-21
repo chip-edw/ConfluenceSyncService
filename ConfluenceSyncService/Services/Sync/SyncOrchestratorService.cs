@@ -155,11 +155,8 @@ namespace ConfluenceSyncService.Services.Sync
                     var tableData = await _confluenceClient.ParseTransitionTrackerTableAsync(page.Id, cancellationToken);
                     var confluenceTableRow = MapToConfluenceTableRow(tableData, fullPage);
 
-                    // NEW: Resolve CustomerId for this customer
-                    var customerId = await ResolveCustomerIdFromNameAsync(confluenceTableRow.CustomerName, cancellationToken);
-
-                    // Updated: Pass the resolved CustomerId (or null if not found)
-                    var syncState = await GetOrCreateSyncState(page.Id, confluenceTableRow.CustomerName, customerId);
+                    // CustomerId will be populated properly during Step6 processing
+                    var syncState = await GetOrCreateSyncState(page.Id, confluenceTableRow.CustomerName, null);
 
                     bool shouldSync = await ShouldSyncToSharePoint(confluenceTableRow, syncState);
 
@@ -1674,72 +1671,6 @@ namespace ConfluenceSyncService.Services.Sync
             return fallbackPath;
         }
 
-        /// <summary>
-        /// Enhanced helper method to resolve CustomerId from CustomerName with multiple fallback strategies
-        /// </summary>
-        private async Task<string?> ResolveCustomerIdFromNameAsync(string customerName, CancellationToken ct)
-        {
-            try
-            {
-                // Strategy 1: Try to find CustomerId from existing TaskIdMap records
-                var taskIdMapRecord = await _dbContext.TaskIdMaps
-                    .Where(t => !string.IsNullOrEmpty(t.CustomerId))
-                    .FirstOrDefaultAsync(ct);
-
-                if (taskIdMapRecord != null)
-                {
-                    // Look for records that might be related to this customer
-                    // This could be enhanced with more sophisticated matching logic
-                    var customerSpecificRecord = await _dbContext.TaskIdMaps
-                        .Where(t => !string.IsNullOrEmpty(t.CustomerId))
-                        .OrderByDescending(t => t.CreatedUtc)
-                        .FirstOrDefaultAsync(ct);
-
-                    if (customerSpecificRecord != null)
-                    {
-                        _logger.Debug("Resolved CustomerId {CustomerId} from TaskIdMap for CustomerName {CustomerName}",
-                            customerSpecificRecord.CustomerId, customerName);
-                        return customerSpecificRecord.CustomerId;
-                    }
-                }
-
-                // Strategy 2: Try to resolve from existing TableSyncStates that might already have CustomerId
-                var existingSyncState = await _dbContext.TableSyncStates
-                    .Where(s => s.CustomerName == customerName && !string.IsNullOrEmpty(s.CustomerId))
-                    .FirstOrDefaultAsync(ct);
-
-                if (existingSyncState != null)
-                {
-                    _logger.Debug("Resolved CustomerId {CustomerId} from TableSyncStates for CustomerName {CustomerName}",
-                        existingSyncState.CustomerId, customerName);
-                    return existingSyncState.CustomerId;
-                }
-
-                // Strategy 3: Try to resolve from SharePoint (if needed for immediate resolution)
-                // This is optional and can be enabled if you need immediate resolution
-                var resolveFromSharePoint = _configuration.GetValue<bool>("TableSync:ResolveCustomerIdFromSharePoint", false);
-
-                if (resolveFromSharePoint)
-                {
-                    var customerId = await ResolveCustomerIdFromSharePointAsync(customerName, ct);
-                    if (!string.IsNullOrEmpty(customerId))
-                    {
-                        _logger.Information("Resolved CustomerId {CustomerId} from SharePoint for CustomerName {CustomerName}",
-                            customerId, customerName);
-                        return customerId;
-                    }
-                }
-
-                // If still not found, log and return null - will be backfilled later
-                _logger.Information("Could not resolve CustomerId for CustomerName {CustomerName} - will be backfilled during migration", customerName);
-                return null;
-            }
-            catch (Exception ex)
-            {
-                _logger.Warning(ex, "Error resolving CustomerId for CustomerName {CustomerName}", customerName);
-                return null;
-            }
-        }
 
         /// <summary>
         /// Optional: Resolve CustomerId from SharePoint Transition Tracker
