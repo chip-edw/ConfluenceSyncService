@@ -1158,6 +1158,8 @@ namespace ConfluenceSyncService.Services.Sync
             var syncState = await _dbContext.TableSyncStates
                 .FirstOrDefaultAsync(s => s.CustomerId == customerId, ct);
 
+            var backfilled = false;
+
             // Fallback to CustomerName lookup if CustomerId lookup fails
             if (syncState == null)
             {
@@ -1171,6 +1173,8 @@ namespace ConfluenceSyncService.Services.Sync
                 if (syncState != null && string.IsNullOrEmpty(syncState.CustomerId))
                 {
                     syncState.CustomerId = customerId;
+                    syncState.UpdatedAt = DateTime.UtcNow;
+                    backfilled = true;
                     _logger.Information("Backfilled CustomerId {CustomerId} for CustomerName {CustomerName}",
                         customerId, customerName);
                 }
@@ -1186,15 +1190,23 @@ namespace ConfluenceSyncService.Services.Sync
                     _ => "No"
                 };
 
-                if (syncState.SyncTracker != normalizedValue || string.IsNullOrEmpty(syncState.CustomerId))
+                var syncTrackerChanged = syncState.SyncTracker != normalizedValue;
+                if (syncTrackerChanged || backfilled)
                 {
                     syncState.SyncTracker = normalizedValue;
-                    if (string.IsNullOrEmpty(syncState.CustomerId))
-                        syncState.CustomerId = customerId;
                     syncState.UpdatedAt = DateTime.UtcNow;
                     await _dbContext.SaveChangesAsync(ct);
-                    _logger.Information("Updated SyncTracker for {CustomerId}/{CustomerName}: {Value}",
-                        customerId, customerName, normalizedValue);
+
+                    if (syncTrackerChanged)
+                    {
+                        _logger.Information("Updated SyncTracker for {CustomerId}/{CustomerName}: {Value}",
+                            customerId, customerName, normalizedValue);
+                    }
+                    if (backfilled && !syncTrackerChanged)
+                    {
+                        _logger.Information("Persisted CustomerId backfill for {CustomerId}/{CustomerName}",
+                            customerId, customerName);
+                    }
                 }
             }
             else
