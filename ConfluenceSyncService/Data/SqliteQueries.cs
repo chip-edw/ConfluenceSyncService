@@ -16,7 +16,8 @@ public static class SqliteQueries
         string RootMessageId,
         int AckVersion,
         string CustomerId,           // NEW: For grouping by customer
-        int? StartOffsetDays);       // NEW: For sequential group ordering
+        int? StartOffsetDays,        // NEW: For sequential group ordering
+        string CategoryKey);         // NEW: For sequential workflow dependency tracking
 
     public static async Task<List<DueCandidate>> GetDueChaserCandidatesAsync(string dbPath, int limit, Serilog.ILogger log, CancellationToken ct)
     {
@@ -27,7 +28,8 @@ public static class SqliteQueries
  SELECT TaskId, SpItemId, TaskName, Region, AnchorDateType, TeamId, ChannelId, RootMessageId, 
         IFNULL(AckVersion,0) as AckVersion, 
         IFNULL(CustomerId,'') as CustomerId,
-        StartOffsetDays
+        StartOffsetDays,
+        IFNULL(Category_Key,'') as Category_Key
  FROM TaskIdMap
  WHERE NextChaseAtUtcCached IS NOT NULL
    AND datetime(NextChaseAtUtcCached) <= datetime('now')
@@ -51,7 +53,8 @@ public static class SqliteQueries
                 rdr.IsDBNull(7) ? "" : rdr.GetString(7),               // RootMessageId
                 rdr.GetInt32(8),                                        // AckVersion
                 rdr.IsDBNull(9) ? "" : rdr.GetString(9),               // CustomerId
-                rdr.IsDBNull(10) ? null : rdr.GetInt32(10)             // StartOffsetDays
+                rdr.IsDBNull(10) ? null : rdr.GetInt32(10),            // StartOffsetDays
+                rdr.IsDBNull(11) ? "" : rdr.GetString(11)              // Category_Key
             ));
         }
         return list;
@@ -169,5 +172,23 @@ public static class SqliteQueries
         cmd.Parameters.AddWithValue("$taskId", taskId);
         await cmd.ExecuteNonQueryAsync(ct);
         log.Information("StartOffsetDaysUpdate taskId={TaskId} startOffsetDays={StartOffsetDays}", taskId, startOffsetDays);
+    }
+
+    /// <summary>
+    /// Updates the Category_Key field for a task. Used during sync operations for sequential workflow dependency tracking.
+    /// </summary>
+    public static async Task UpdateCategoryKeyAsync(string dbPath, long taskId, string categoryKey, Serilog.ILogger log, CancellationToken ct)
+    {
+        using var conn = new SqliteConnection($"Data Source={dbPath};");
+        await conn.OpenAsync(ct);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+ UPDATE TaskIdMap
+ SET Category_Key = $categoryKey
+ WHERE TaskId = $taskId;";
+        cmd.Parameters.AddWithValue("$categoryKey", categoryKey);
+        cmd.Parameters.AddWithValue("$taskId", taskId);
+        await cmd.ExecuteNonQueryAsync(ct);
+        log.Information("CategoryKeyUpdate taskId={TaskId} categoryKey={CategoryKey}", taskId, categoryKey);
     }
 }

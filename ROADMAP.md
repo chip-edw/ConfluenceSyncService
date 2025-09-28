@@ -13,6 +13,17 @@
 
 ## 🧩 Planned / Backlog
 
+### 🛠️ Enhanced Self-Healing Configuration
+- [ ] **Template propagation configuration flag**: Add `WorkflowHealing.EnableTemplatePropagation` setting to allow disabling template field updates during self-healing for emergency scenarios or debugging
+
+### 🧰 Template → TaskIdMap Reconcile (Maintenance)
+- [ ] **Feature flag**: Add Maintenance.ReconcileTemplate.Enabled to toggle the job on/off.
+- [ ] **Dry run**: Add Maintenance.ReconcileTemplate.DryRun to log planned updates only.
+- [ ] **Scope**: Target tasks with State='linked' and not Status='Completed'.
+- [ ]  **Updates**: Propagate AnchorDateType and StartOffsetDays; recompute NextChaseAtUtcCached when anchor/offset changed or null.
+- [ ]  **Cadence**: Maintenance.ReconcileTemplate.CadenceMinutes (default 60).
+- [ ]  **Minimal logging**: Per-run summary counts; warn if anchor dates (GoLive/HypercareEnd) missing.
+
 ### 🔐 Security & Configuration
 - [ ] **ProfileValidator**: Ensures all required keys (`ClientId`, `ClientSecret`, `RefreshToken`) exist before running a sync for a given profile
 

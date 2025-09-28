@@ -331,6 +331,19 @@ catch (Exception ex)
 - **API Failures**: Retry logic with exponential backoff
 - **Placeholder Detection**: Ensures template defaults don't overwrite real data
 
+### Enhanced Self-Healing
+
+**Purpose**: Synchronize local TaskIdMap records with current workflow template values
+
+**Scope**: Only non-completed tasks (`Status != "Completed"`)
+
+**Fields Updated**: 
+- `AnchorDateType` - synced with template ActivitySpec
+- `StartOffsetDays` - synced with template ActivitySpec  
+- Notification fields - recalculated using updated template values
+
+**API Impact**: No SharePoint API calls - local database only
+
 ## Performance Characteristics
 
 ### Sync Frequency

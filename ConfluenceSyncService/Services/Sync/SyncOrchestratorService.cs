@@ -627,8 +627,9 @@ namespace ConfluenceSyncService.Services.Sync
         #region Self Healing
 
         /// <summary>
-        /// Enhanced self-healing that populates missing StartOffsetDays and notification fields
+        /// Enhanced self-healing that populates missing StartOffsetDays, Category_Key and notification fields
         /// REFACTORED: Now uses CustomerId lookup instead of CustomerName to eliminate SP API calls
+        /// FIXED: Now properly syncs AnchorDateType and always propagates template changes to non-completed tasks
         /// </summary>
         private async Task EnhancedSelfHealingWithWorkflowFields(
             string customerId,
@@ -647,7 +648,9 @@ namespace ConfluenceSyncService.Services.Sync
                              && (x.NextChaseAtUtcCached == null
                                  || x.TeamId == null
                                  || x.ChannelId == null
-                                 || x.StartOffsetDays == null)
+                                 || x.StartOffsetDays == null
+                                 || x.AnchorDateType == null
+                                 || x.Category_Key == null)
                              && (x.Status == null || x.Status != "Completed"))
                     .ToListAsync(ct);
 
@@ -685,7 +688,7 @@ namespace ConfluenceSyncService.Services.Sync
 
                         foreach (var record in recordsNeedingHealing)
                         {
-                            // Look up the activity spec for this task to get StartOffsetDays
+                            // Look up the activity spec for this task to get template values
                             var activity = activities.FirstOrDefault(a => a.TaskName == record.TaskName);
                             if (activity == null)
                             {
@@ -694,37 +697,71 @@ namespace ConfluenceSyncService.Services.Sync
                                 continue;
                             }
 
-                            // Populate StartOffsetDays if missing
-                            if (record.StartOffsetDays == null)
+                            bool needsUpdate = false;
+
+                            // FIXED: Always sync template fields (not just when null) for non-completed tasks
+                            if (record.AnchorDateType != activity.AnchorDateType)
                             {
+                                _logger.Information("Self-healing: Updated AnchorDateType for TaskId {TaskId}: '{OldValue}' → '{NewValue}'",
+                                    record.TaskId, record.AnchorDateType ?? "null", activity.AnchorDateType);
+                                record.AnchorDateType = activity.AnchorDateType;
+                                needsUpdate = true;
+                            }
+
+                            if (record.StartOffsetDays != activity.StartOffsetDays)
+                            {
+                                _logger.Information("Self-healing: Updated StartOffsetDays for TaskId {TaskId}: {OldValue} → {NewValue}",
+                                    record.TaskId, record.StartOffsetDays?.ToString() ?? "null", activity.StartOffsetDays);
                                 record.StartOffsetDays = activity.StartOffsetDays;
-                                _logger.Information("Self-healing: Populated StartOffsetDays={StartOffsetDays} for TaskId {TaskId}",
-                                    activity.StartOffsetDays, record.TaskId);
+                                needsUpdate = true;
+                            }
+
+                            // FIXED: Populate missing Category_Key from template
+                            if (string.IsNullOrEmpty(record.Category_Key) || record.Category_Key != activity.TaskCategory)
+                            {
+                                _logger.Information("Self-healing: Updated Category_Key for TaskId {TaskId}: '{OldValue}' → '{NewValue}'",
+                                    record.TaskId, record.Category_Key ?? "null", activity.TaskCategory);
+                                record.Category_Key = activity.TaskCategory;
+                                needsUpdate = true;
                             }
 
                             // Populate notification fields if missing
                             if (record.NextChaseAtUtcCached == null)
                             {
+                                // FIXED: Use updated template values for calculation
                                 var dueDate = CalculateTaskDueDate(goLive, hypercareEnd, record.AnchorDateType,
-                                    activity.StartOffsetDays);
+                                    record.StartOffsetDays ?? 0);
 
                                 if (dueDate.HasValue)
                                 {
                                     record.NextChaseAtUtcCached = dueDate.Value;
                                     _logger.Information("Self-healing: Populated NextChaseAtUtcCached={DueDate} for TaskId {TaskId}",
                                         dueDate.Value, record.TaskId);
+                                    needsUpdate = true;
                                 }
                             }
 
                             if (string.IsNullOrEmpty(record.TeamId))
+                            {
                                 record.TeamId = teamId;
+                                needsUpdate = true;
+                            }
                             if (string.IsNullOrEmpty(record.ChannelId))
+                            {
                                 record.ChannelId = channelId;
+                                needsUpdate = true;
+                            }
                             if (string.IsNullOrEmpty(record.Region))
+                            {
                                 record.Region = region;
+                                needsUpdate = true;
+                            }
 
-                            _logger.Information("Self-healing TaskId {TaskId}: updated workflow and notification fields",
-                                record.TaskId);
+                            if (needsUpdate)
+                            {
+                                _logger.Information("Self-healing TaskId {TaskId}: updated workflow and notification fields",
+                                    record.TaskId);
+                            }
                         }
 
                         await _dbContext.SaveChangesAsync(ct);
@@ -958,6 +995,9 @@ namespace ConfluenceSyncService.Services.Sync
                     // NEW: Populate StartOffsetDays in cache
                     await SqliteQueries.UpdateStartOffsetDaysAsync(_dbPath, mappedId.Value, a.StartOffsetDays, _logger, ct);
 
+                    // NEW: Populate Category_Key in cache
+                    await SqliteQueries.UpdateCategoryKeyAsync(_dbPath, mappedId.Value, a.TaskCategory, _logger, ct);
+
                     _logger.Information("task.upsert {Correlation} created (reserved reuse) TaskId={TaskId}, ItemId={ItemId}",
                         correlation, mappedId.Value, newId);
 
@@ -988,10 +1028,14 @@ namespace ConfluenceSyncService.Services.Sync
                     // NEW: Populate StartOffsetDays in cache for new tasks
                     await SqliteQueries.UpdateStartOffsetDaysAsync(_dbPath, taskId, a.StartOffsetDays, _logger, ct);
 
+                    // NEW: Populate Category_Key in cache for new tasks
+                    await SqliteQueries.UpdateCategoryKeyAsync(_dbPath, taskId, a.TaskCategory, _logger, ct);
+
                     _logger.Information("task.upsert {Correlation} created {Task} with ID {ItemId}", correlation, a.TaskName, id);
                 }
             }
         }
+
         #endregion
 
         private static string NormalizeName(string? s)

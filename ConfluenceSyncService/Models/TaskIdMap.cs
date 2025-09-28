@@ -23,6 +23,7 @@ public class TaskIdMap
     public string? PhaseName { get; set; }
     public string? TaskName { get; set; }
     public string? WorkflowId { get; set; }
+    public string? Category_Key { get; set; }
 
     // Lifecycle: reserved → linked
     [Required]
