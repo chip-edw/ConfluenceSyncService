@@ -15,9 +15,12 @@ public static class SqliteQueries
         string ChannelId,
         string RootMessageId,
         int AckVersion,
-        string CustomerId,           // NEW: For grouping by customer
-        int? StartOffsetDays,        // NEW: For sequential group ordering
-        string CategoryKey);         // NEW: For sequential workflow dependency tracking
+        string CustomerId,
+        int? StartOffsetDays,
+        string CategoryKey,
+        string PhaseName,              // From TaskIdMap table
+        string CompanyName,            // Will be populated from SharePoint
+        DateTimeOffset? DueDateUtc);   // Will be populated from SharePoint
 
     public static async Task<List<DueCandidate>> GetDueChaserCandidatesAsync(string dbPath, int limit, Serilog.ILogger log, CancellationToken ct)
     {
@@ -29,7 +32,8 @@ public static class SqliteQueries
         IFNULL(AckVersion,0) as AckVersion, 
         IFNULL(CustomerId,'') as CustomerId,
         StartOffsetDays,
-        IFNULL(Category_Key,'') as Category_Key
+        IFNULL(Category_Key,'') as Category_Key,
+        IFNULL(PhaseName,'') as PhaseName
  FROM TaskIdMap
  WHERE NextChaseAtUtcCached IS NOT NULL
    AND datetime(NextChaseAtUtcCached) <= datetime('now')
@@ -54,7 +58,10 @@ public static class SqliteQueries
                 rdr.GetInt32(8),                                        // AckVersion
                 rdr.IsDBNull(9) ? "" : rdr.GetString(9),               // CustomerId
                 rdr.IsDBNull(10) ? null : rdr.GetInt32(10),            // StartOffsetDays
-                rdr.IsDBNull(11) ? "" : rdr.GetString(11)              // Category_Key
+                rdr.IsDBNull(11) ? "" : rdr.GetString(11),             // Category_Key
+                rdr.IsDBNull(12) ? "" : rdr.GetString(12),             // PhaseName
+                "",                                                     // CompanyName (populated later from SharePoint)
+                null                                                    // DueDateUtc (populated later from SharePoint)
             ));
         }
         return list;

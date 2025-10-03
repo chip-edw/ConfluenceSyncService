@@ -133,13 +133,26 @@ public sealed class ChaserJobHostedService : BackgroundService
 
             ct.ThrowIfCancellationRequested();
 
-            // 2) SP confirm by item id: Status + DueDateUtc
+            // 2) SP confirm by item id: Status + DueDateUtc + CompanyName
             var statusDue = await _sp.GetTaskStatusAndDueUtcAsync(t.SpItemId, ct);
             if (statusDue is null)
             {
                 _log.Warning("SpConfirmStatus: missing itemId={SpItemId}", t.SpItemId);
                 continue;
             }
+
+            // Enrich the candidate with SharePoint data for Teams notification
+            var enrichedCandidate = t with
+            {
+                CompanyName = statusDue.CompanyName,
+                DueDateUtc = statusDue.DueDateUtc
+                // PhaseName already populated from database
+            };
+
+            _log.Debug("EnrichedCandidate: TaskId={TaskId}, Company='{CompanyName}', Due={DueDateUtc}, Phase='{PhaseName}'",
+                enrichedCandidate.TaskId, enrichedCandidate.CompanyName, enrichedCandidate.DueDateUtc, enrichedCandidate.PhaseName);
+
+
             if (string.Equals(statusDue.Status, "Completed", StringComparison.OrdinalIgnoreCase))
             {
                 // Cache completion status to prevent future queries
@@ -156,7 +169,9 @@ public sealed class ChaserJobHostedService : BackgroundService
             // 3) business-day send window
             var inWindow = BusinessDayHelper.IsWithinWindow(t.Region, _opts.BusinessWindow.StartHourLocal, _opts.BusinessWindow.EndHourLocal, _opts.BusinessWindow.CushionHours, DateTimeOffset.UtcNow);
             var nextSendUtc = BusinessDayHelper.NextBusinessDayAtHourUtc(t.Region, _opts.SendHourLocal, DateTimeOffset.UtcNow);
+
             _log.Debug("ChaserWindowCheck taskId={TaskId} inWindow={InWindow} nextSendUtc={Next}", t.TaskId, inWindow, nextSendUtc);
+
             //if (!inWindow)
             //{
             //    await SqliteQueries.UpdateNextChaseCachedAsync(_dbPath, t.TaskId, nextSendUtc, _log, ct);
@@ -164,6 +179,17 @@ public sealed class ChaserJobHostedService : BackgroundService
             await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: false, nextChaseAtUtc: nextSendUtc, ct);
             //    continue;
             //}
+
+            // Skip Teams notification for tasks without due dates - cannot determine overdue status
+            // SharePoint tracking (nextChaseAtUtc) is already updated above for proper scheduling
+            if (!enrichedCandidate.DueDateUtc.HasValue)
+            {
+                _log.Warning("SkipNoDueDate: taskId={TaskId}, TaskName={TaskName}, CustomerId={CustomerId}, SpItemId={SpItemId} - " +
+                             "DueDateUtc is NULL, cannot send overdue notification. SharePoint nextChaseAtUtc updated. " +
+                             "Task will be re-evaluated after date backfill.",
+                    t.TaskId, t.TaskName, t.CustomerId, t.SpItemId);
+                continue; // Skip ACK link rotation, Teams notification, and chase count increment
+            }
 
             // 4) rotate link
             var newVersion = (t.AckVersion <= 0 ? 1 : t.AckVersion) + 1;
@@ -188,8 +214,15 @@ public sealed class ChaserJobHostedService : BackgroundService
                 continue; // Skip to next task without doing any updates
             }
 
-            // 5) post to Teams thread (short text + card)
-            var overdueText = $"OVERDUE: {t.TaskName} was due {statusDue.DueDateUtc?.ToLocalTime():g}. Please review and ACK.";
+            // 5) post to Teams thread (short text + card) with enriched context
+            var companyDisplay = string.IsNullOrWhiteSpace(enrichedCandidate.CompanyName) ? "Unassigned Company" : enrichedCandidate.CompanyName;
+            var phaseDisplay = string.IsNullOrWhiteSpace(enrichedCandidate.PhaseName) ? "—" : enrichedCandidate.PhaseName;
+            var dueDisplay = enrichedCandidate.DueDateUtc.HasValue
+                ? enrichedCandidate.DueDateUtc.Value.ToLocalTime().ToString("MMM d, yyyy")
+                : "No due date";
+
+            var overdueText = $"🔔 **{companyDisplay}** · Due: **{dueDisplay}** · Phase: *{phaseDisplay}*\n" +
+                              $"OVERDUE: {enrichedCandidate.TaskName} needs attention. Please review and click the ACK Link when Completed.";
 
             var postOk = await _teams.PostChaserAsync(t.TeamId, t.ChannelId, t.RootMessageId, overdueText, ackUrl, _opts.ThreadFallback, ct);
             _log.Information("TeamsPostResult taskId={TaskId} success={Success}", t.TaskId, postOk);

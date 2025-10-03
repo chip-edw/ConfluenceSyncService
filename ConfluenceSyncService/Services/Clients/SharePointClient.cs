@@ -738,10 +738,10 @@ namespace ConfluenceSyncService.Services.Clients
 
         #region C2 APIs
 
-        public sealed record StatusDue(string Status, DateTimeOffset? DueDateUtc);
+        public sealed record StatusDue(string Status, DateTimeOffset? DueDateUtc, string CompanyName);
 
         /// <summary>
-        /// C2: Confirm by item id (only Status + DueDateUtc), using mapped internal names.
+        /// C2: Confirm by item id (Status, DueDateUtc, CompanyName), using mapped internal names.
         /// </summary>
         public async Task<StatusDue?> GetTaskStatusAndDueUtcAsync(long spItemId, CancellationToken ct)
         {
@@ -751,8 +751,9 @@ namespace ConfluenceSyncService.Services.Clients
             const string listDisplayName = "Phase Tasks & Metadata";
             var statusField = ResolveField(listDisplayName, "Status");
             var dueField = ResolveField(listDisplayName, "DueDateUtc");
+            var customerField = ResolveField(listDisplayName, "Customer");
 
-            var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{spItemId}?$select=id&$expand=fields($select={statusField},{dueField})";
+            var url = $"https://graph.microsoft.com/v1.0/sites/{siteId}/lists/{listId}/items/{spItemId}?$select=id&$expand=fields($select={statusField},{dueField},{customerField})";
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await _confidentialClientApp.GetAccessToken());
@@ -765,11 +766,12 @@ namespace ConfluenceSyncService.Services.Clients
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
 
             if (!doc.RootElement.TryGetProperty("fields", out var fields))
-                return new StatusDue("", null);
+                return new StatusDue("", null, "");
 
             var status = fields.TryGetProperty(statusField, out var sProp) ? (sProp.GetString() ?? "") : "";
-            DateTimeOffset? due = null;
+            var companyName = fields.TryGetProperty(customerField, out var cProp) ? (cProp.GetString() ?? "") : "";
 
+            DateTimeOffset? due = null;
             if (fields.TryGetProperty(dueField, out var dProp) && dProp.ValueKind == JsonValueKind.String)
             {
                 var s = dProp.GetString();
@@ -777,7 +779,7 @@ namespace ConfluenceSyncService.Services.Clients
                     due = parsed.ToUniversalTime();
             }
 
-            return new StatusDue(status, due);
+            return new StatusDue(status, due, companyName);
         }
 
         /// <summary>

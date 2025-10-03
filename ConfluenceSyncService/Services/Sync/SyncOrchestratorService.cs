@@ -1,10 +1,12 @@
 using ConfluenceSyncService.Data;
 using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Models;
+using ConfluenceSyncService.Options;
 using ConfluenceSyncService.Services.Clients;
 using ConfluenceSyncService.Services.State;
 using ConfluenceSyncService.Services.Workflow;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Serilog;
 using System.Security.Cryptography;
 using System.Text;
@@ -24,6 +26,7 @@ namespace ConfluenceSyncService.Services.Sync
         private readonly ITaskIdIssuer _taskIdIssuer;
         private readonly IHostEnvironment _environment;
         private readonly string _dbPath;
+        private readonly ChaserJobOptions _chaserOpts;
 
         // Single source-of-truth path for the workflow template JSON (no fallback).
         // You can override via appsettings: "Workflow:TemplatePath"
@@ -39,7 +42,8 @@ namespace ConfluenceSyncService.Services.Sync
             ICursorStore cursorStore,
             IWorkflowMappingProvider mappingProvider,
             ITaskIdIssuer taskIdIssuer,
-            IHostEnvironment environment)
+            IHostEnvironment environment,
+            IOptions<ChaserJobOptions> chaserOpts)
         {
             _sharePointClient = sharePointClient;
             _confluenceClient = confluenceClient;
@@ -50,10 +54,12 @@ namespace ConfluenceSyncService.Services.Sync
             _taskIdIssuer = taskIdIssuer;
             _logger = Log.ForContext<SyncOrchestratorService>();
             _environment = environment;
+            _chaserOpts = chaserOpts.Value;
 
             // Extract SQLite database path for StartOffsetDays updates
             var cs = _configuration.GetConnectionString("ConfluenceSync");
             _dbPath = ExtractSqlitePathOrFallback(cs, _environment.ContentRootPath);
+            _chaserOpts = chaserOpts.Value;
         }
 
         public async Task RunSyncAsync(CancellationToken cancellationToken)
@@ -816,6 +822,7 @@ namespace ConfluenceSyncService.Services.Sync
             var fGoLive = MapField("Phase Tasks & Metadata", "GoLiveDate");
             var fHypercare = MapField("Phase Tasks & Metadata", "HypercareEndDate");
             var fStatus = MapField("Phase Tasks & Metadata", "Status");
+            var fDueDate = MapField("Phase Tasks & Metadata", "DueDateUtc");
 
             // === ENHANCED SELF-HEALING: Detect and fix TaskIdMap records missing workflow or notification fields ===
             await EnhancedSelfHealingWithWorkflowFields(customerId, customerName, activities, region, goLive, hypercareEnd, ct);
@@ -844,6 +851,27 @@ namespace ConfluenceSyncService.Services.Sync
                     fields[fGoLive] = goLive.Value.ToString("yyyy-MM-ddT00:00:00Z");
                 if (hypercareEnd.HasValue)
                     fields[fHypercare] = hypercareEnd.Value.ToString("yyyy-MM-ddT00:00:00Z");
+
+                // Calculate DueDateUtc for this task
+                var dueDate = CalculateTaskDueDate(goLive, hypercareEnd, a.AnchorDateType, a.StartOffsetDays);
+                if (dueDate.HasValue)
+                {
+                    if (!_chaserOpts.DryRun)
+                    {
+                        fields[fDueDate] = dueDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ");
+                        _logger.Debug("DueDateUtc calculated for {TaskName}: {DueDate} (AnchorType={AnchorType}, Offset={Offset})",
+                            a.TaskName, dueDate.Value, a.AnchorDateType, a.StartOffsetDays);
+                    }
+                    else
+                    {
+                        _logger.Information("DRY RUN: Would set DueDateUtc for {TaskName} to {DueDate}", a.TaskName, dueDate.Value);
+                    }
+                }
+                else
+                {
+                    _logger.Warning("Could not calculate DueDateUtc for {TaskName}: AnchorType={AnchorType}, Offset={Offset}, GoLive={GoLive}, Hypercare={Hypercare}",
+                        a.TaskName, a.AnchorDateType, a.StartOffsetDays, goLive, hypercareEnd);
+                }
 
                 var map = await _dbContext.TaskIdMaps.AsNoTracking().FirstOrDefaultAsync(
                     x => x.ListKey == listKey && x.CorrelationId == correlation && x.State == "linked", ct);
@@ -962,6 +990,20 @@ namespace ConfluenceSyncService.Services.Sync
                                 patch[fHypercare] = fields[fHypercare];
                             else
                                 _logger.Warning("fHypercare field mapping is null or not in fields dictionary");
+                        }
+
+                        // Add DueDateUtc to patch if calculated and not in dry run
+                        if (dueDate.HasValue && !_chaserOpts.DryRun)
+                        {
+                            if (fDueDate != null)
+                            {
+                                patch[fDueDate] = dueDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ");
+                                _logger.Debug("Adding DueDateUtc to patch for SpItemId={SpItemId}: {DueDate}", spItemId, dueDate.Value);
+                            }
+                        }
+                        else if (dueDate.HasValue && _chaserOpts.DryRun)
+                        {
+                            _logger.Information("DRY RUN: Would update DueDateUtc for SpItemId={SpItemId} to {DueDate}", spItemId, dueDate.Value);
                         }
 
                         _logger.Information("Updating SharePoint item {SpItemId} with {PatchCount} fields", spItemId, patch.Count);
