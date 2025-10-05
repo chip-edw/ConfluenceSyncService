@@ -172,24 +172,46 @@ public sealed class ChaserJobHostedService : BackgroundService
 
             _log.Debug("ChaserWindowCheck taskId={TaskId} inWindow={InWindow} nextSendUtc={Next}", t.TaskId, inWindow, nextSendUtc);
 
-            //if (!inWindow)
-            //{
-            //    await SqliteQueries.UpdateNextChaseCachedAsync(_dbPath, t.TaskId, nextSendUtc, _log, ct);
-            //    // write-through to SP to keep Power BI truth
-            await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: false, nextChaseAtUtc: nextSendUtc, ct);
-            //    continue;
-            //}
+            // If we're not in the send window, we only want to schedule nextChaseAtUtc.
+            // In DryRun, DO NOT write to SharePoint; just log what would happen.
+            // (Note: even when in the window, we still need the nextSendUtc for TTL/ACK.)
+            if (!inWindow)
+            {
+                if (dryRunMode)
+                {
+                    _log.Information("DRY RUN: Would update SP (NextChaseAtUtc) for SpItemId={SpItemId} to {Next}", t.SpItemId, nextSendUtc);
+                    // Optional: keep local cache fresh without touching SP
+                    await SqliteQueries.UpdateNextChaseCachedAsync(_dbPath, t.TaskId, nextSendUtc, _log, ct);
+                }
+                else
+                {
+                    await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: false, nextChaseAtUtc: nextSendUtc, ct);
+                }
+                // We do NOT continue here; allow downstream logic to skip on missing due date, etc.
+            }
+
 
             // Skip Teams notification for tasks without due dates - cannot determine overdue status
             // SharePoint tracking (nextChaseAtUtc) is already updated above for proper scheduling
             if (!enrichedCandidate.DueDateUtc.HasValue)
             {
-                _log.Warning("SkipNoDueDate: taskId={TaskId}, TaskName={TaskName}, CustomerId={CustomerId}, SpItemId={SpItemId} - " +
-                             "DueDateUtc is NULL, cannot send overdue notification. SharePoint nextChaseAtUtc updated. " +
-                             "Task will be re-evaluated after date backfill.",
-                    t.TaskId, t.TaskName, t.CustomerId, t.SpItemId);
+                if (dryRunMode)
+                {
+                    _log.Warning("SkipNoDueDate: taskId={TaskId}, TaskName={TaskName}, CustomerId={CustomerId}, SpItemId={SpItemId} - " +
+                                 "DueDateUtc is NULL, cannot send overdue notification. DRY RUN: Only SQLite nextChaseAtUtc cached; no SP write. " +
+                                 "Task will be re-evaluated after date backfill.",
+                        t.TaskId, t.TaskName, t.CustomerId, t.SpItemId);
+                }
+                else
+                {
+                    _log.Warning("SkipNoDueDate: taskId={TaskId}, TaskName={TaskName}, CustomerId={CustomerId}, SpItemId={SpItemId} - " +
+                                 "DueDateUtc is NULL, cannot send overdue notification. SharePoint nextChaseAtUtc updated. " +
+                                 "Task will be re-evaluated after date backfill.",
+                        t.TaskId, t.TaskName, t.CustomerId, t.SpItemId);
+                }
                 continue; // Skip ACK link rotation, Teams notification, and chase count increment
             }
+
 
             // 4) rotate link
             var newVersion = (t.AckVersion <= 0 ? 1 : t.AckVersion) + 1;
@@ -386,7 +408,7 @@ public sealed class ChaserJobHostedService : BackgroundService
 
             // Check if ALL tasks in this offset group are completed
             var groupStatus = await SqliteQueries.GetGroupTaskStatusAsync(
-                _dbPath, customerId, anchorDateType, offsetDays, _log, ct);
+                _dbPath, customerId, categoryKey!, anchorDateType, offsetDays, _log, ct);
 
             var completedTasks = groupStatus.Count(t =>
                 string.Equals(t.Status, "Completed", StringComparison.OrdinalIgnoreCase));
@@ -396,15 +418,33 @@ public sealed class ChaserJobHostedService : BackgroundService
             _log.Debug("WorkflowFilter: Offset group Day {OffsetDays} in category '{CategoryKey}' status: {Completed}/{Total} tasks completed",
                 offsetDays, categoryKey, completedTasks, totalTasksInGroup);
 
-            // If this offset group is incomplete, return its due tasks and block later groups
+            // If this offset group is incomplete, return only "Not Started" tasks from this group and block later groups
             if (completedTasks < totalTasksInGroup)
             {
-                _log.Information("WorkflowFilter: Found incomplete offset group Day {OffsetDays} in category '{CategoryKey}' for customer {CustomerId}. " +
-                                "Group has {Due} due tasks. This blocks all subsequent offset groups within this category.",
-                    offsetDays, categoryKey, customerId, groupTasks.Count);
+                // Build a map of TaskId -> Status for this offset group (from SQLite)
+                var statusMap = groupStatus.ToDictionary(
+                    t => t.TaskId,
+                    t => (t.Status ?? "").Trim(),
+                    comparer: EqualityComparer<long>.Default
+                );
 
-                return groupTasks;
+                // Keep only tasks whose DB status is exactly "Not Started"
+                var notStartedTasks = groupTasks
+                    .Where(t =>
+                        statusMap.TryGetValue(t.TaskId, out var s) &&
+                        string.Equals(s, "Not Started", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                _log.Information(
+                    "WorkflowFilter: Incomplete offset group Day {OffsetDays} in category '{CategoryKey}' for customer {CustomerId}. " +
+                    "Eligible (Not Started)={EligibleCount} of Due={DueCount}. Blocking later offset groups.",
+                    offsetDays, categoryKey, customerId, notStartedTasks.Count, groupTasks.Count
+                );
+
+                // If none are Not Started, block later groups by returning an empty set
+                return notStartedTasks;
             }
+
             else
             {
                 _log.Information("WorkflowFilter: Offset group Day {OffsetDays} in category '{CategoryKey}' for customer {CustomerId} is complete ({Completed}/{Total}). " +

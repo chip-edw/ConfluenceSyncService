@@ -656,13 +656,17 @@ namespace ConfluenceSyncService.Services.Sync
                                  || x.ChannelId == null
                                  || x.StartOffsetDays == null
                                  || x.AnchorDateType == null
-                                 || x.Category_Key == null)
+                                 || x.Category_Key == null
+                                 // NEW: Also heal when Status is null/empty/whitespace
+                                 || string.IsNullOrWhiteSpace(x.Status))
+                             // Keep excluding completed tasks from healing
                              && (x.Status == null || x.Status != "Completed"))
                     .ToListAsync(ct);
 
+
                 if (recordsNeedingHealing.Any())
                 {
-                    // REFACTORED: Use CustomerId lookup instead of CustomerName
+                    // Use CustomerId lookup instead of CustomerName
                     // This eliminates the need for SP API calls to resolve CustomerId -> CustomerName
                     var syncState = await _dbContext.TableSyncStates
                         .FirstOrDefaultAsync(s => s.CustomerId == customerId, ct);
@@ -762,7 +766,13 @@ namespace ConfluenceSyncService.Services.Sync
                                 record.Region = region;
                                 needsUpdate = true;
                             }
-
+                            // Heal missing Status → default to "Not Started"
+                            if (string.IsNullOrWhiteSpace(record.Status))
+                            {
+                                record.Status = "Not Started";
+                                needsUpdate = true;
+                                _logger.Information("Self-healing: Set default Status=\"Not Started\" for TaskId {TaskId}", record.TaskId);
+                            }
                             if (needsUpdate)
                             {
                                 _logger.Information("Self-healing TaskId {TaskId}: updated workflow and notification fields",
@@ -953,12 +963,29 @@ namespace ConfluenceSyncService.Services.Sync
                             _logger.Information("Status field '{FieldName}' not found in SpItemId={SpItemId}", fStatus, spItemId);
                         }
 
+                        // Mirror DB Status from SP (SP is source of truth)
+                        {
+                            var normalizedStatus = string.IsNullOrWhiteSpace(curStatus) ? "Not Started" : curStatus.Trim();
+                            if (mappedId.HasValue)
+                            {
+                                var dbRec = await _dbContext.TaskIdMaps.FirstOrDefaultAsync(x => x.TaskId == mappedId.Value, ct);
+                                if (dbRec != null && !string.Equals(dbRec.Status?.Trim(), normalizedStatus, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    dbRec.Status = normalizedStatus;
+                                    await _dbContext.SaveChangesAsync(ct);
+                                    _logger.Information("StatusSync taskId={TaskId} status={Status}", mappedId.Value, normalizedStatus);
+                                }
+                            }
+                        }
+
+
                         if (string.Equals(curStatus, "Completed", StringComparison.OrdinalIgnoreCase))
                         {
                             _logger.Information("task.upsert {Correlation} skip reschedule: already Completed (TaskId={TaskId}, ItemId={ItemId})",
                                 correlation, mappedId, spItemId);
                             continue;
                         }
+
 
                         if (fCorrelation == null || fAnchorType == null || fStartOffset == null ||
                             fDuration == null || fTaskCategory == null || fRole == null)
@@ -1008,10 +1035,18 @@ namespace ConfluenceSyncService.Services.Sync
 
                         _logger.Information("Updating SharePoint item {SpItemId} with {PatchCount} fields", spItemId, patch.Count);
 
-                        await _sharePointClient.UpdateListItemAsync(siteId, phaseTasksListName, spItemId!, patch);
+                        if (_chaserOpts.DryRun)
+                        {
+                            _logger.Information("DRY RUN: Would UPDATE SP item {ItemId} in list '{List}' with fields: {Fields}",
+                                spItemId, phaseTasksListName, System.Text.Json.JsonSerializer.Serialize(patch));
+                        }
+                        else
+                        {
+                            await _sharePointClient.UpdateListItemAsync(siteId, phaseTasksListName, spItemId!, patch);
+                            _logger.Information("task.upsert {Correlation} updated anchor fields (TaskId={TaskId}, ItemId={ItemId})",
+                                correlation, mappedId, spItemId);
+                        }
 
-                        _logger.Information("task.upsert {Correlation} updated anchor fields (TaskId={TaskId}, ItemId={ItemId})",
-                            correlation, mappedId, spItemId);
 
                         continue;
                     }
@@ -1028,23 +1063,42 @@ namespace ConfluenceSyncService.Services.Sync
                     fields[fStatus] = "Not Started";
                     fields[fTaskId] = mappedId.Value;
 
-                    _logger.Information("=== CREATE (reserved reuse) === Site:{SiteId} List:{List} Activity:{Key}-{Name} Correlation:{Correlation}",
-                        siteId, phaseTasksListName, a.Key, a.TaskName, correlation);
+                    // NEW: Cache default status to DB so gating has a value immediately
+                    {
+                        var dbRec = await _dbContext.TaskIdMaps.FirstOrDefaultAsync(x => x.TaskId == mappedId.Value, ct);
+                        if (dbRec != null && string.IsNullOrWhiteSpace(dbRec.Status))
+                        {
+                            dbRec.Status = "Not Started";
+                            await _dbContext.SaveChangesAsync(ct);
+                            _logger.Information("StatusInit (reserved) taskId={TaskId} status=Not Started", mappedId.Value);
+                        }
+                    }
 
-                    var newId = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
-                    await _taskIdIssuer.LinkToSharePointAsync(mappedId.Value, newId, ct);
+                    _logger.Information("=== CREATE (reserved reuse) === Site:{SiteId} List:{List} Activity:{Key}-{Name}" +
+                        " Correlation:{Correlation}", siteId, phaseTasksListName, a.Key, a.TaskName, correlation);
 
-                    // NEW: Populate StartOffsetDays in cache
+                    if (_chaserOpts.DryRun)
+                    {
+                        _logger.Information("DRY RUN: Would CREATE SP item in list '{List}' with fields: {Fields}",
+                            phaseTasksListName, System.Text.Json.JsonSerializer.Serialize(fields));
+                        // Do NOT link to SharePoint or fabricate an ID in DryRun.
+                    }
+                    else
+                    {
+                        var newId = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
+                        await _taskIdIssuer.LinkToSharePointAsync(mappedId.Value, newId, ct);
+                        _logger.Information("task.upsert {Correlation} created (reserved reuse) TaskId={TaskId}, ItemId={ItemId}",
+                            correlation, mappedId.Value, newId);
+                    }
+
+                    // Local cache updates are safe in DryRun (non-SP) and help validation
                     await SqliteQueries.UpdateStartOffsetDaysAsync(_dbPath, mappedId.Value, a.StartOffsetDays, _logger, ct);
-
-                    // NEW: Populate Category_Key in cache
                     await SqliteQueries.UpdateCategoryKeyAsync(_dbPath, mappedId.Value, a.TaskCategory, _logger, ct);
 
-                    _logger.Information("task.upsert {Correlation} created (reserved reuse) TaskId={TaskId}, ItemId={ItemId}",
-                        correlation, mappedId.Value, newId);
 
                     continue;
                 }
+
 
                 {
                     fields[fStatus] = "Not Started";
@@ -1060,21 +1114,39 @@ namespace ConfluenceSyncService.Services.Sync
 
                     fields[fTaskId] = taskId;
 
+                    // NEW: Cache default status to DB so gating has a value immediately
+                    {
+                        var dbRec = await _dbContext.TaskIdMaps.FirstOrDefaultAsync(x => x.TaskId == taskId, ct);
+                        if (dbRec != null && string.IsNullOrWhiteSpace(dbRec.Status))
+                        {
+                            dbRec.Status = "Not Started";
+                            await _dbContext.SaveChangesAsync(ct);
+                            _logger.Information("StatusInit (new) taskId={TaskId} status=Not Started", taskId);
+                        }
+                    }
+
                     _logger.Information("=== CREATE === Site:{SiteId} List:{List} Activity:{Key}-{Name} Correlation:{Correlation}",
                         siteId, phaseTasksListName, a.Key, a.TaskName, correlation);
 
-                    var id = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
+                    if (_chaserOpts.DryRun)
+                    {
+                        _logger.Information("DRY RUN: Would CREATE SP item in list '{List}' with fields: {Fields}",
+                            phaseTasksListName, System.Text.Json.JsonSerializer.Serialize(fields));
+                        // Do NOT link to SharePoint in DryRun.
+                    }
+                    else
+                    {
+                        var id = await _sharePointClient.CreateListItemAsync(siteId, phaseTasksListName, fields);
+                        await _taskIdIssuer.LinkToSharePointAsync(taskId, id, ct);
+                        _logger.Information("task.upsert {Correlation} created {Task} with ID {ItemId}", correlation, a.TaskName, id);
+                    }
 
-                    await _taskIdIssuer.LinkToSharePointAsync(taskId, id, ct);
-
-                    // NEW: Populate StartOffsetDays in cache for new tasks
+                    // Local cache updates are safe in DryRun (non-SP) and help validation
                     await SqliteQueries.UpdateStartOffsetDaysAsync(_dbPath, taskId, a.StartOffsetDays, _logger, ct);
-
-                    // NEW: Populate Category_Key in cache for new tasks
                     await SqliteQueries.UpdateCategoryKeyAsync(_dbPath, taskId, a.TaskCategory, _logger, ct);
 
-                    _logger.Information("task.upsert {Correlation} created {Task} with ID {ItemId}", correlation, a.TaskName, id);
                 }
+
             }
         }
 

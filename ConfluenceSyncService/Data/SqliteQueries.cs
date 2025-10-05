@@ -74,6 +74,7 @@ public static class SqliteQueries
     public static async Task<List<GroupTaskStatus>> GetGroupTaskStatusAsync(
         string dbPath,
         string customerId,
+        string categoryKey,
         string anchorDateType,
         int startOffsetDays,
         Serilog.ILogger log,
@@ -88,12 +89,14 @@ public static class SqliteQueries
  WHERE CustomerId = $customerId
    AND AnchorDateType = $anchorDateType
    AND StartOffsetDays = $startOffsetDays
+   AND Category_Key = $categoryKey 
    AND State = 'linked'
  ORDER BY TaskName;";
 
         cmd.Parameters.AddWithValue("$customerId", customerId);
         cmd.Parameters.AddWithValue("$anchorDateType", anchorDateType);
         cmd.Parameters.AddWithValue("$startOffsetDays", startOffsetDays);
+        cmd.Parameters.AddWithValue("$categoryKey", categoryKey);
 
         var list = new List<GroupTaskStatus>();
         using var rdr = await cmd.ExecuteReaderAsync(ct);
