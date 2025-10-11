@@ -201,4 +201,96 @@ public static class SqliteQueries
         await cmd.ExecuteNonQueryAsync(ct);
         log.Information("CategoryKeyUpdate taskId={TaskId} categoryKey={CategoryKey}", taskId, categoryKey);
     }
+
+    // -----------------------
+    // Step 2: MessageId updaters
+    // -----------------------
+    public static async Task UpdateRootMessageIdAsync(
+        string dbPath,
+        long taskId,
+        string rootMessageId,
+        Serilog.ILogger log,
+        bool dryRun,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(rootMessageId))
+        {
+            log.Warning("Skip UpdateRootMessageIdAsync: empty rootMessageId for TaskId={TaskId}", taskId);
+            return;
+        }
+
+        if (dryRun)
+        {
+            log.Information("DRY RUN: Would set RootMessageId='{RootMessageId}' for TaskId={TaskId}", rootMessageId, taskId);
+            return;
+        }
+
+        const string sql = @"UPDATE TaskIdMap
+                         SET RootMessageId = $id
+                         WHERE TaskId = $taskId;";
+
+        var cs = $"Data Source={dbPath};";
+        await using var conn = new SqliteConnection(cs);
+        await conn.OpenAsync(ct);
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$id", rootMessageId);
+        cmd.Parameters.AddWithValue("$taskId", taskId);
+
+        var rows = await cmd.ExecuteNonQueryAsync(ct);
+        if (rows == 0)
+        {
+            log.Warning("UpdateRootMessageIdAsync: 0 rows affected for TaskId={TaskId}", taskId);
+        }
+        else
+        {
+            log.Information("Updated RootMessageId for TaskId={TaskId} => {RootMessageId}", taskId, rootMessageId);
+        }
+    }
+
+    public static async Task UpdateLastMessageIdAsync(
+        string dbPath,
+        long taskId,
+        string lastMessageId,
+        Serilog.ILogger log,
+        bool dryRun,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(lastMessageId))
+        {
+            log.Warning("Skip UpdateLastMessageIdAsync: empty lastMessageId for TaskId={TaskId}", taskId);
+            return;
+        }
+
+        if (dryRun)
+        {
+            log.Information("DRY RUN: Would set LastMessageId='{LastMessageId}' for TaskId={TaskId}", lastMessageId, taskId);
+            return;
+        }
+
+        const string sql = @"UPDATE TaskIdMap
+                         SET LastMessageId = $id
+                         WHERE TaskId = $taskId;";
+
+        var cs = $"Data Source={dbPath};";
+        await using var conn = new SqliteConnection(cs);
+        await conn.OpenAsync(ct);
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$id", lastMessageId);
+        cmd.Parameters.AddWithValue("$taskId", taskId);
+
+        var rows = await cmd.ExecuteNonQueryAsync(ct);
+        if (rows == 0)
+        {
+            log.Warning("UpdateLastMessageIdAsync: 0 rows affected for TaskId={TaskId}", taskId);
+        }
+        else
+        {
+            log.Information("Updated LastMessageId for TaskId={TaskId} => {LastMessageId}", taskId, lastMessageId);
+        }
+    }
+
 }

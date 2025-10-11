@@ -243,22 +243,83 @@ public sealed class ChaserJobHostedService : BackgroundService
                 ? enrichedCandidate.DueDateUtc.Value.ToLocalTime().ToString("MMM d, yyyy")
                 : "No due date";
 
+
+
+
+
+
             var overdueText = $"🔔 **{companyDisplay}** · Due: **{dueDisplay}** · Phase: *{phaseDisplay}*\n" +
                               $"OVERDUE: {enrichedCandidate.TaskName} needs attention. Please review and click the ACK Link when Completed.";
 
-            var postOk = await _teams.PostChaserAsync(t.TeamId, t.ChannelId, t.RootMessageId, overdueText, ackUrl, _opts.ThreadFallback, ct);
-            _log.Information("TeamsPostResult taskId={TaskId} success={Success}", t.TaskId, postOk);
+            bool proceedWithUpdates = false;
 
-            // TEMPORARY: Treat root message success as overall success to test database updates
-            bool proceedWithUpdates = true; // Force true to test database logic
-
-            if (!proceedWithUpdates) // Changed from !postOk
+            if (_teams is TeamsNotificationService tsvc)
             {
-                _log.Error("TeamsPostFailed taskId={TaskId}", t.TaskId);
+                // New: send and capture IDs
+                var (ok, rootId, lastId) = await tsvc.PostChaserWithIdsAsync(
+                    t.TeamId,
+                    t.ChannelId,
+                    t.RootMessageId,
+                    overdueText,
+                    ackUrl,
+                    _opts.ThreadFallback,
+                    ct);
+
+
+                _log.Information("TeamsPostResult taskId={TaskId} success={Success} rootId={RootId} lastId={LastId}",
+                    t.TaskId, ok, rootId, lastId);
+
+                if (ok)
+                {
+                    // Persist message IDs (non-DryRun path only; we're already past DryRun continue)
+                    if (string.IsNullOrWhiteSpace(t.RootMessageId) && !string.IsNullOrWhiteSpace(rootId))
+                    {
+                        await SqliteQueries.UpdateRootMessageIdAsync(_dbPath, t.TaskId, rootId, _log, dryRun: false, ct);
+                        await SqliteQueries.UpdateLastMessageIdAsync(_dbPath, t.TaskId, (lastId ?? rootId), _log, dryRun: false, ct);
+
+                        _log.Information(
+                            "Persisted first notification IDs for TaskId={TaskId}: RootMessageId='{RootId}', LastMessageId='{LastId}'",
+                            t.TaskId, rootId, lastId ?? rootId
+                        );
+                    }
+                    else if (!string.IsNullOrWhiteSpace(lastId))
+                    {
+                        await SqliteQueries.UpdateLastMessageIdAsync(_dbPath, t.TaskId, lastId, _log, dryRun: false, ct);
+
+                        _log.Information(
+                            "Persisted chaser LastMessageId for TaskId={TaskId}: LastMessageId='{LastId}'",
+                            t.TaskId, lastId
+                        );
+                    }
+
+                    proceedWithUpdates = true;
+                }
+                else
+                {
+                    _log.Error("TeamsPostFailed taskId={TaskId} (ID-capable path)", t.TaskId);
+                }
+
+            }
+            else
+            {
+                // Backward-compatible fallback to existing interface
+                var ok = await _teams.PostChaserAsync(t.TeamId, t.ChannelId, t.RootMessageId, overdueText, ackUrl, _opts.ThreadFallback, ct);
+                _log.Information("TeamsPostResult taskId={TaskId} success={Success} (legacy path)", t.TaskId, ok);
+                proceedWithUpdates = ok;
+            }
+
+            if (!proceedWithUpdates)
+            {
                 continue;
             }
 
             _log.Debug("Attempting SharePoint update for taskId={TaskId}", t.TaskId);
+
+
+
+
+
+
 
             // 6) write-through to SP (Important=true, ChaseCount+1, NextChaseAtUtc=nextUtc)
             await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: true, nextChaseAtUtc: nextUtc, ct);

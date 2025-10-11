@@ -333,5 +333,152 @@ namespace ConfluenceSyncService.Teams
         }
             };
         }
+
+        // ---------------------------
+        // Step 1 additions (ID-returning variants)
+        // ---------------------------
+
+        private static async Task<string?> ExtractMessageIdAsync(HttpResponseMessage resp, CancellationToken ct)
+        {
+            try
+            {
+                await using var s = await resp.Content.ReadAsStreamAsync(ct);
+                using var doc = await JsonDocument.ParseAsync(s, cancellationToken: ct);
+                if (doc.RootElement.TryGetProperty("id", out var idProp))
+                    return idProp.GetString();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to parse Graph response for message id");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Post a chaser. If rootMessageId is present, replies twice (text + card) and returns (ok, null, lastId).
+        /// If rootMessageId is missing and threadFallback == "RootNew", creates a new root and then replies with card,
+        /// returning (ok, rootId, lastId). No DB writes here; higher layers will decide what to persist.
+        /// </summary>
+        public async Task<(bool ok, string? rootId, string? lastId)> PostChaserWithIdsAsync(
+            string? teamId,
+            string? channelId,
+            string? rootMessageId,
+            string overdueText,
+            string ackUrl,
+            string threadFallback,
+            CancellationToken ct)
+        {
+            var http = await CreateGraphClientAsync(ct);
+
+            // Use per-task overrides if provided; otherwise fall back to configured defaults.
+            var team = string.IsNullOrWhiteSpace(teamId) ? _opts.TeamId : teamId!;
+            var channel = string.IsNullOrWhiteSpace(channelId) ? _opts.ChannelId : channelId!;
+
+            Log.Information("PostChaserWithIdsAsync: TeamId={TeamId}, ChannelId={ChannelId}, RootMessageId={RootMessageId}, ThreadFallback={ThreadFallback}",
+                team, channel, rootMessageId, threadFallback);
+
+            // If we have a valid thread root, reply twice (text + card).
+            if (!string.IsNullOrWhiteSpace(rootMessageId))
+            {
+                var replyUrl = $"/v1.0/teams/{team}/channels/{channel}/messages/{rootMessageId}/replies";
+
+                // 1) Short text reply
+                var textPayload = BuildPlainTextPayload(overdueText);
+                var textResp = await http.PostAsJsonAsync(replyUrl, textPayload, ct);
+                if (!textResp.IsSuccessStatusCode)
+                {
+                    var errorContent = await textResp.Content.ReadAsStringAsync(ct);
+                    Log.Error("Teams text reply failed: Status={Status}, Error={ErrorContent}, URL={URL}, TeamId={TeamId}, ChannelId={ChannelId}, RootMessageId={RootMessageId}",
+                        textResp.StatusCode, errorContent, replyUrl, team, channel, rootMessageId);
+
+                    if (string.Equals(threadFallback, "RootNew", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return await PostChaserWithRootFallbackForIdsAsync(http, team, channel, overdueText, ackUrl, ct);
+                    }
+                    return (false, null, null);
+                }
+
+                // 2) Card (or simple html with link) reply; treat THIS as "last"
+                var cardPayload = BuildAdaptiveCardReplyPayload(ackUrl);
+                var cardResp = await http.PostAsJsonAsync(replyUrl, cardPayload, ct);
+                if (!cardResp.IsSuccessStatusCode)
+                {
+                    var errorContent = await cardResp.Content.ReadAsStringAsync(ct);
+                    Log.Error("Teams card reply failed: Status={Status}, Error={ErrorContent}, URL={URL}",
+                        cardResp.StatusCode, errorContent, replyUrl);
+                    return (false, null, null);
+                }
+
+                var lastId = await ExtractMessageIdAsync(cardResp, ct);
+                if (string.IsNullOrWhiteSpace(lastId))
+                    Log.Warning("Card reply succeeded but no message id was returned by Graph");
+
+                return (true, null, lastId);
+            }
+
+            // No root id—honor fallback
+            if (string.Equals(threadFallback, "RootNew", StringComparison.OrdinalIgnoreCase))
+            {
+                return await PostChaserWithRootFallbackForIdsAsync(http, team, channel, overdueText, ackUrl, ct);
+            }
+
+            // Skip if we aren't allowed to create a new thread.
+            return (false, null, null);
+        }
+
+        /// <summary>
+        /// Fallback that creates a new root post (text), extracts its id, then posts a card reply and returns both ids.
+        /// </summary>
+        private static async Task<(bool ok, string? rootId, string? lastId)> PostChaserWithRootFallbackForIdsAsync(
+            HttpClient http,
+            string team,
+            string channel,
+            string overdueText,
+            string ackUrl,
+            CancellationToken ct)
+        {
+            Log.Information("PostChaserWithRootFallbackForIdsAsync: Creating new root in team={TeamId}, channel={ChannelId}", team, channel);
+
+            var rootPayload = BuildPlainTextPayload(overdueText);
+            var rootUrl = $"/v1.0/teams/{team}/channels/{channel}/messages";
+
+            Log.Information("Posting root message to URL: {URL}", rootUrl);
+            var rootResp = await http.PostAsJsonAsync(rootUrl, rootPayload, ct);
+            if (!rootResp.IsSuccessStatusCode)
+            {
+                var errorContent = await rootResp.Content.ReadAsStringAsync(ct);
+                Log.Error("Root message creation failed: Status={Status}, Error={ErrorContent}, URL={URL}",
+                    rootResp.StatusCode, errorContent, rootUrl);
+                return (false, null, null);
+            }
+
+            var newRootId = await ExtractMessageIdAsync(rootResp, ct);
+            if (string.IsNullOrWhiteSpace(newRootId))
+            {
+                Log.Error("Failed to extract message ID from root message response");
+                return (false, null, null);
+            }
+
+            Log.Information("Got new root message ID: {MessageId}, posting card reply", newRootId);
+
+            var replyUrl = $"/v1.0/teams/{team}/channels/{channel}/messages/{newRootId}/replies";
+            var cardPayload = BuildAdaptiveCardReplyPayload(ackUrl);
+            var cardResp = await http.PostAsJsonAsync(replyUrl, cardPayload, ct);
+
+            if (!cardResp.IsSuccessStatusCode)
+            {
+                var errorContent = await cardResp.Content.ReadAsStringAsync(ct);
+                Log.Error("Card reply failed: Status={Status}, Error={ErrorContent}, URL={URL}",
+                    cardResp.StatusCode, errorContent, replyUrl);
+                return (false, newRootId, null);
+            }
+
+            var lastId = await ExtractMessageIdAsync(cardResp, ct);
+            if (string.IsNullOrWhiteSpace(lastId))
+                Log.Warning("Card reply succeeded but no message id was returned by Graph");
+
+            return (true, newRootId, lastId);
+        }
+
     }
 }
