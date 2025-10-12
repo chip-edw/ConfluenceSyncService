@@ -1,4 +1,5 @@
 using ConfluenceSyncService.Data;
+using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Options;
 using ConfluenceSyncService.Security; // IHmacSigner, AckSignerOptions
 using ConfluenceSyncService.Services.Clients;
@@ -20,6 +21,7 @@ public sealed class ChaserJobHostedService : BackgroundService
     private readonly IHmacSigner _signer;
     private readonly AckSignerOptions _signerOpts;
     private readonly AckLinkOptions _ackPolicy;
+    private readonly ICategoryOrderProvider _categoryOrderProvider;
 
     private int _consecutiveFailures;
 
@@ -31,6 +33,7 @@ public sealed class ChaserJobHostedService : BackgroundService
         IHmacSigner signer,
         IOptions<AckSignerOptions> signerOpts,
         IOptions<AckLinkOptions> ackPolicyOpts,
+        ICategoryOrderProvider categoryOrderProvider,
         IConfiguration config,
         IHostEnvironment env)
     {
@@ -46,6 +49,7 @@ public sealed class ChaserJobHostedService : BackgroundService
         _signer = signer;
         _signerOpts = signerOpts.Value;
         _ackPolicy = ackPolicyOpts.Value;
+        _categoryOrderProvider = categoryOrderProvider;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -353,52 +357,87 @@ public sealed class ChaserJobHostedService : BackgroundService
 
         var eligibleTasks = new List<SqliteQueries.DueCandidate>();
 
-        // FIXED: Group by customer, category, and anchor date type for proper sequential workflow enforcement
-        var customerGroups = allDueTasks
-            .Where(t => !string.IsNullOrWhiteSpace(t.CustomerId))
-            .GroupBy(t => new { t.CustomerId, t.CategoryKey, t.AnchorDateType })  // PROPER SEQUENCING
+        // ✅ Group by Customer + Phase (the correct gate scope)
+        var groups = allDueTasks
+            .Where(t => !string.IsNullOrWhiteSpace(t.CustomerId)
+                        && !string.IsNullOrWhiteSpace(t.PhaseName))
+            .GroupBy(t => new { t.CustomerId, t.PhaseName })
             .ToList();
 
-        _log.Information("WorkflowFilter: Found {GroupCount} customer workflow streams (by Category)", customerGroups.Count());
+        _log.Information("WorkflowFilter: Found {GroupCount} customer/phase groups", groups.Count);
 
-        foreach (var customerGroup in customerGroups)
+        // Load ordered categories once
+        var orderMap = _categoryOrderProvider.GetMap(); // throws if not loaded
+        var orderComparer = StringComparer.OrdinalIgnoreCase;
+
+        foreach (var g in groups)
         {
-            var key = customerGroup.Key;
-            var customerTasks = customerGroup.ToList();
+            var customerId = g.Key.CustomerId;
+            var phaseName = g.Key.PhaseName;
 
-            _log.Debug("WorkflowFilter: Processing customer {CustomerId}, category '{CategoryKey}', anchor {AnchorType} with {TaskCount} due tasks",
-                key.CustomerId, key.CategoryKey ?? "(null)", key.AnchorDateType, customerTasks.Count);
+            // Distinct categories in this group, preserving template order
+            var distinctCategories = g
+                .Select(t => t.CategoryKey)
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .Distinct(orderComparer)
+                .OrderBy(k =>
+                {
+                    // Unknown categories: push to the end but log once
+                    if (k is null) return int.MaxValue;
+                    if (!orderMap.TryGetValue(k, out var ord))
+                    {
+                        _log.Warning("WorkflowFilter: Unknown category '{CategoryKey}' for customer {CustomerId}, phase '{PhaseName}'. " +
+                                     "It is not present in the template order; treating as lowest priority.",
+                                     k, customerId, phaseName);
+                        return int.MaxValue;
+                    }
+                    return ord;
+                })
+                .ToList();
 
-            try
+            // Find the earliest category that is NOT complete for this customer+phase
+            string? earliestOpen = null;
+            foreach (var cat in distinctCategories)
             {
-                var eligibleForCustomer = await ProcessCustomerCategoryWorkflowAsync(
-                    key.CustomerId,
-                    key.CategoryKey,
-                    key.AnchorDateType,
-                    customerTasks,
-                    ct);
+                if (string.IsNullOrWhiteSpace(cat)) continue;
 
-                eligibleTasks.AddRange(eligibleForCustomer);
+                var complete = await IsCategoryCompleteAsync(customerId, phaseName, cat, ct);
+                if (!complete)
+                {
+                    earliestOpen = cat;
+                    break;
+                }
             }
-            catch (Exception ex)
+
+            if (earliestOpen is null)
             {
-                _log.Error(ex, "WorkflowFilter: Error processing workflow for customer {CustomerId}, category '{CategoryKey}', anchor {AnchorType}. Skipping this group.",
-                    key.CustomerId, key.CategoryKey ?? "(null)", key.AnchorDateType);
+                _log.Information("WorkflowFilter: All categories complete for customer {CustomerId}, phase '{PhaseName}'. No eligible tasks.",
+                    customerId, phaseName);
+                continue;
             }
+
+            // Keep ONLY tasks in the earliest-open category (parallel within the category)
+            var kept = g.Where(t => string.Equals(t.CategoryKey, earliestOpen, StringComparison.OrdinalIgnoreCase)).ToList();
+            var skipped = g.Count() - kept.Count;
+
+            _log.Information("gate.pick customer={CustomerId} phase={PhaseName} earliest=\"{Category}\" kept={Kept} skipped={Skipped}",
+                customerId, phaseName, earliestOpen, kept.Count, skipped);
+
+            eligibleTasks.AddRange(kept);
         }
 
-        // Handle tasks with missing workflow metadata (transition period support)
+        // Permissive pass-through for orphaned tasks during transition (unchanged)
         var orphanedTasks = allDueTasks
-            .Where(t => string.IsNullOrWhiteSpace(t.CustomerId) ||
-                       string.IsNullOrWhiteSpace(t.CategoryKey) ||
-                       !t.StartOffsetDays.HasValue)
+            .Where(t => string.IsNullOrWhiteSpace(t.CustomerId)
+                        || string.IsNullOrWhiteSpace(t.CategoryKey)
+                        || !t.StartOffsetDays.HasValue
+                        || string.IsNullOrWhiteSpace(t.PhaseName))
             .ToList();
 
         if (orphanedTasks.Count > 0)
         {
-            _log.Warning("WorkflowFilter: Found {Count} tasks with missing workflow metadata (CustomerId, CategoryKey, or StartOffsetDays). " +
-                        "Adding to eligible tasks without dependency checking for transition period support.",
-                orphanedTasks.Count);
+            _log.Warning("WorkflowFilter: {Count} tasks missing workflow metadata (CustomerId, PhaseName, CategoryKey, or StartOffsetDays). " +
+                         "Allowing during transition period.", orphanedTasks.Count);
             eligibleTasks.AddRange(orphanedTasks);
         }
 
@@ -408,115 +447,47 @@ public sealed class ChaserJobHostedService : BackgroundService
         return eligibleTasks;
     }
 
+
     /// <summary>
     /// Processes workflow dependencies for a single customer's category workflow stream.
-    /// FIXED: Now enforces sequential category completion before allowing next category to proceed.
+    /// Enforces: categories are sequential; tasks within a category are parallel.
+    /// Returns all due tasks in this category only if it is the earliest incomplete category
+    /// for the (CustomerId, PhaseName) group; otherwise returns an empty list.
     /// </summary>
     private async Task<List<SqliteQueries.DueCandidate>> ProcessCustomerCategoryWorkflowAsync(
         string customerId,
         string? categoryKey,
-        string anchorDateType,
+        string phaseName,
+        string anchorDateType, // retained for signature compatibility; not used for gating
         List<SqliteQueries.DueCandidate> categoryTasks,
         CancellationToken ct)
     {
-        // Handle null CategoryKey (transition period)
+        // Handle null/blank category during transition
         if (string.IsNullOrWhiteSpace(categoryKey))
         {
-            _log.Warning("WorkflowFilter: Customer {CustomerId} has tasks with null CategoryKey. Allowing them to proceed for transition period.",
+            _log.Warning("WorkflowFilter: Customer {CustomerId} has tasks with null CategoryKey. Allowing during transition period.",
                 customerId);
             return categoryTasks;
         }
 
-        _log.Debug("WorkflowFilter: Processing category '{CategoryKey}' for customer {CustomerId} with {TaskCount} due tasks",
-            categoryKey, customerId, categoryTasks.Count);
+        _log.Debug("WorkflowFilter: Processing category '{CategoryKey}' for customer {CustomerId}, phase '{PhaseName}' with {TaskCount} due tasks",
+            categoryKey, customerId, phaseName, categoryTasks.Count);
 
-        // Check if this category is the earliest incomplete category for this customer
-        var isEarliestIncompleteCategory = await IsEarliestIncompleteCategoryAsync(
-            customerId, categoryKey, anchorDateType, ct);
-
-        if (!isEarliestIncompleteCategory)
+        // Gate: only proceed if this is the earliest incomplete category for (customer, phase)
+        var isEarliest = await IsEarliestIncompleteCategoryAsync(customerId, phaseName, categoryKey, ct);
+        if (!isEarliest)
         {
-            _log.Information("WorkflowFilter: Category '{CategoryKey}' for customer {CustomerId} is blocked by earlier incomplete categories. " +
-                            "Skipping {TaskCount} due tasks.", categoryKey, customerId, categoryTasks.Count);
+            _log.Information(
+                "WorkflowFilter: Category '{CategoryKey}' for customer {CustomerId}, phase '{PhaseName}' is blocked by earlier incomplete categories. Skipping {TaskCount} due tasks.",
+                categoryKey, customerId, phaseName, categoryTasks.Count);
             return new List<SqliteQueries.DueCandidate>();
         }
 
-        // Within the category, group by StartOffsetDays for parallel task support
-        var offsetGroups = categoryTasks
-            .Where(t => t.StartOffsetDays.HasValue)
-            .GroupBy(t => t.StartOffsetDays!.Value)
-            .OrderBy(g => g.Key) // Sequential order within category: earliest offset first
-            .ToList();
+        // Parallel within category: return all due tasks for this category
+        _log.Debug("WorkflowFilter: Category '{CategoryKey}' is earliest-open for customer {CustomerId}, phase '{PhaseName}'. Eligible={Count}",
+            categoryKey, customerId, phaseName, categoryTasks.Count);
 
-        if (offsetGroups.Count == 0)
-        {
-            _log.Warning("WorkflowFilter: Category '{CategoryKey}' for customer {CustomerId} has no tasks with valid StartOffsetDays",
-                categoryKey, customerId);
-            return new List<SqliteQueries.DueCandidate>();
-        }
-
-        _log.Debug("WorkflowFilter: Category '{CategoryKey}' has {GroupCount} offset groups: [{Groups}]",
-            categoryKey, offsetGroups.Count, string.Join(", ", offsetGroups.Select(g => $"Day {g.Key}")));
-
-        // Within the category, process offset groups sequentially
-        foreach (var group in offsetGroups)
-        {
-            var offsetDays = group.Key;
-            var groupTasks = group.ToList();
-
-            _log.Debug("WorkflowFilter: Checking offset group Day {OffsetDays} in category '{CategoryKey}' with {TaskCount} due tasks",
-                offsetDays, categoryKey, groupTasks.Count);
-
-            // Check if ALL tasks in this offset group are completed
-            var groupStatus = await SqliteQueries.GetGroupTaskStatusAsync(
-                _dbPath, customerId, categoryKey!, anchorDateType, offsetDays, _log, ct);
-
-            var completedTasks = groupStatus.Count(t =>
-                string.Equals(t.Status, "Completed", StringComparison.OrdinalIgnoreCase));
-
-            var totalTasksInGroup = groupStatus.Count;
-
-            _log.Debug("WorkflowFilter: Offset group Day {OffsetDays} in category '{CategoryKey}' status: {Completed}/{Total} tasks completed",
-                offsetDays, categoryKey, completedTasks, totalTasksInGroup);
-
-            // If this offset group is incomplete, return only "Not Started" tasks from this group and block later groups
-            if (completedTasks < totalTasksInGroup)
-            {
-                // Build a map of TaskId -> Status for this offset group (from SQLite)
-                var statusMap = groupStatus.ToDictionary(
-                    t => t.TaskId,
-                    t => (t.Status ?? "").Trim(),
-                    comparer: EqualityComparer<long>.Default
-                );
-
-                // Keep only tasks whose DB status is exactly "Not Started"
-                var notStartedTasks = groupTasks
-                    .Where(t =>
-                        statusMap.TryGetValue(t.TaskId, out var s) &&
-                        string.Equals(s, "Not Started", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-
-                _log.Information(
-                    "WorkflowFilter: Incomplete offset group Day {OffsetDays} in category '{CategoryKey}' for customer {CustomerId}. " +
-                    "Eligible (Not Started)={EligibleCount} of Due={DueCount}. Blocking later offset groups.",
-                    offsetDays, categoryKey, customerId, notStartedTasks.Count, groupTasks.Count
-                );
-
-                // If none are Not Started, block later groups by returning an empty set
-                return notStartedTasks;
-            }
-
-            else
-            {
-                _log.Information("WorkflowFilter: Offset group Day {OffsetDays} in category '{CategoryKey}' for customer {CustomerId} is complete ({Completed}/{Total}). " +
-                                "Checking next offset group.", offsetDays, categoryKey, customerId, completedTasks, totalTasksInGroup);
-            }
-        }
-
-        // All offset groups in this category are complete
-        _log.Information("WorkflowFilter: All offset groups in category '{CategoryKey}' are complete for customer {CustomerId}. No eligible tasks.",
-            categoryKey, customerId);
-        return new List<SqliteQueries.DueCandidate>();
+        return categoryTasks;
     }
 
     /// <summary>
@@ -638,43 +609,36 @@ public sealed class ChaserJobHostedService : BackgroundService
     /// </summary>
     private async Task<bool> IsCategoryCompleteAsync(
         string customerId,
+        string phaseName,
         string categoryKey,
-        string anchorDateType,
         CancellationToken ct)
     {
-        using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
+        const string sql = @"
+SELECT COUNT(1)
+FROM TaskIdMap
+WHERE CustomerId    = $customerId
+  AND PhaseName     = $phaseName
+  AND Category_Key  = $categoryKey
+  AND State         = 'linked'
+  AND (Status IS NULL OR Status <> 'Completed');";
+
+        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
         await conn.OpenAsync(ct);
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"
-        SELECT COUNT(*) as Total,
-               SUM(CASE WHEN IFNULL(Status, '') = 'Completed' THEN 1 ELSE 0 END) as Completed
-        FROM TaskIdMap
-        WHERE CustomerId = $customerId
-          AND Category_Key = $categoryKey
-          AND AnchorDateType = $anchorDateType
-          AND State = 'linked'";
 
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
         cmd.Parameters.AddWithValue("$customerId", customerId);
+        cmd.Parameters.AddWithValue("$phaseName", phaseName);
         cmd.Parameters.AddWithValue("$categoryKey", categoryKey);
-        cmd.Parameters.AddWithValue("$anchorDateType", anchorDateType);
 
-        using var reader = await cmd.ExecuteReaderAsync(ct);
-        if (await reader.ReadAsync(ct))
-        {
-            var total = reader.GetInt32("Total");
-            var completed = reader.GetInt32("Completed");
+        var remaining = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+        var isComplete = remaining == 0;
 
-            var isComplete = total > 0 && completed == total;
+        _log.Debug("WorkflowFilter: CategoryComplete? customer={CustomerId} phase='{PhaseName}' category='{CategoryKey}' remainingOpen={Remaining} => {Complete}",
+            customerId, phaseName, categoryKey, remaining, isComplete);
 
-            _log.Debug("WorkflowFilter: Category '{CategoryKey}' completion check for customer {CustomerId}: {Completed}/{Total} (Complete: {IsComplete})",
-                categoryKey, customerId, completed, total, isComplete);
-
-            return isComplete;
-        }
-
-        _log.Debug("WorkflowFilter: No tasks found for category '{CategoryKey}' and customer {CustomerId}. Treating as complete.",
-            categoryKey, customerId);
-        return true; // No tasks = complete
+        return isComplete;
     }
+
     #endregion
 }

@@ -2,6 +2,7 @@ using Asp.Versioning;
 using ConfluenceSyncService.Common.Secrets;
 using ConfluenceSyncService.Endpoints; // AckActionHandler type lives here (endpoint handler)
 using ConfluenceSyncService.Extensions;
+using ConfluenceSyncService.Interfaces;
 using ConfluenceSyncService.Links;
 using ConfluenceSyncService.Services.State;
 using ConfluenceSyncService.Services.Workflow;
@@ -217,6 +218,10 @@ namespace ConfluenceSyncService
                     // Load the workflow mapping once at startup
                     var mappingProvider = scope.ServiceProvider.GetRequiredService<IWorkflowMappingProvider>();
                     await mappingProvider.LoadAsync(); // expects to log workflowId + version
+
+                    var categoryOrder = scope.ServiceProvider.GetRequiredService<ICategoryOrderProvider>();
+                    await categoryOrder.LoadAsync();
+                    Log.Information("CategoryOrderProvider loaded successfully");
 
                     var cursorStore = scope.ServiceProvider.GetRequiredService<ICursorStore>();
 

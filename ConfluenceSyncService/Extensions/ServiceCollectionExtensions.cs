@@ -128,11 +128,13 @@ namespace ConfluenceSyncService.Extensions
             Log.Information("Configuring business services...");
             services.AddSingleton<StartupLoaderService>();
             services.AddSingleton<IWorkflowMappingProvider, WorkflowMappingProvider>();
-            services.AddScoped<ISyncOrchestratorService, SyncOrchestratorService>();
+            services.AddSingleton<ICategoryOrderProvider, CategoryOrderProvider>();
 
+            // Orchestrator + state services
+            services.AddScoped<ISyncOrchestratorService, SyncOrchestratorService>();
             services.AddSingleton<ITaskIdIssuer, SqliteTaskIdIssuer>();
 
-            // FIXED: SignatureService registration - use lazy initialization instead of sync call
+            // SignatureService registration - use lazy initialization instead of sync call
             services.AddSingleton<SignatureService>(sp =>
             {
                 // This will be called when the service is first requested, not during container building
