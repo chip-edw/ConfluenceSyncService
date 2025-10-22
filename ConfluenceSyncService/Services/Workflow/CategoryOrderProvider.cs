@@ -8,7 +8,7 @@ namespace ConfluenceSyncService.Services.Workflow
         private readonly IConfiguration _config;
         private readonly IHostEnvironment _env;
         private readonly ILogger<CategoryOrderProvider> _log;
-        private Dictionary<string, int>? _map;
+        private Dictionary<(string Category, string AnchorDateType), int>? _map;
 
         private const string ConfigKey = "ChaserJob:WorkflowTemplatePath";
 
@@ -35,11 +35,11 @@ namespace ConfluenceSyncService.Services.Workflow
             await using var fs = File.OpenRead(path);
             using var doc = await JsonDocument.ParseAsync(fs, cancellationToken: ct);
 
-            // Expect shape: { "WorkflowId": "...", "Activities": [ { "Category": "...", ... }, ... ] }
+            // Expect shape: { "WorkflowId": "...", "Activities": [ { "Category": "...", "AnchorDateType": "...", ... }, ... ] }
             if (!doc.RootElement.TryGetProperty("Activities", out var activities) || activities.ValueKind != JsonValueKind.Array)
                 throw new InvalidOperationException("Workflow_template.json is missing 'Activities' array.");
 
-            var order = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var order = new Dictionary<(string Category, string AnchorDateType), int>();
             var listForLog = new List<string>();
 
             foreach (var item in activities.EnumerateArray())
@@ -47,14 +47,21 @@ namespace ConfluenceSyncService.Services.Workflow
                 if (!item.TryGetProperty("Category", out var catProp) || catProp.ValueKind != JsonValueKind.String)
                     continue;
 
-                var category = catProp.GetString() ?? "";
-                if (string.IsNullOrWhiteSpace(category)) continue;
+                if (!item.TryGetProperty("AnchorDateType", out var anchorProp) || anchorProp.ValueKind != JsonValueKind.String)
+                    continue;
 
-                if (!order.ContainsKey(category))
+                var category = catProp.GetString() ?? "";
+                var anchorDateType = anchorProp.GetString() ?? "";
+
+                if (string.IsNullOrWhiteSpace(category) || string.IsNullOrWhiteSpace(anchorDateType))
+                    continue;
+
+                var key = (category, anchorDateType);
+                if (!order.ContainsKey(key))
                 {
                     var idx = order.Count;
-                    order[category] = idx;
-                    listForLog.Add($"[{idx}] \"{category}\"");
+                    order[key] = idx;
+                    listForLog.Add($"[{idx}] \"{category}\" (Anchor: {anchorDateType})");
                 }
             }
 
@@ -65,7 +72,7 @@ namespace ConfluenceSyncService.Services.Workflow
             _log.LogInformation("gate.order loaded: {OrderedCategories}", string.Join(", ", listForLog));
         }
 
-        public IReadOnlyDictionary<string, int> GetMap()
+        public IReadOnlyDictionary<(string Category, string AnchorDateType), int> GetMap()
             => _map ?? throw new InvalidOperationException("CategoryOrderProvider not loaded. Call LoadAsync() once at startup.");
     }
 }

@@ -340,8 +340,8 @@ public sealed class ChaserJobHostedService : BackgroundService
 
     /// <summary>
     /// Implements sequential workflow dependency filtering.
-    /// Groups tasks by (CustomerId, Category_Key, AnchorDateType) and ensures categories complete sequentially.
-    /// FIXED: Now uses Category_Key instead of StartOffsetDays for proper workflow sequencing.
+    /// Groups tasks by (CustomerId, PhaseName, AnchorDateType) and ensures categories complete sequentially.
+    /// Within a category, tasks at the same StartOffsetDays are parallel.
     /// </summary>
     private async Task<List<SqliteQueries.DueCandidate>> ApplyWorkflowDependencyFilterAsync(
         List<SqliteQueries.DueCandidate> allDueTasks,
@@ -357,104 +357,103 @@ public sealed class ChaserJobHostedService : BackgroundService
 
         var eligible = new List<SqliteQueries.DueCandidate>();
 
-        // Correct scope: per Customer + Phase
-        var groups = allDueTasks
-            .Where(t => !string.IsNullOrWhiteSpace(t.CustomerId) && !string.IsNullOrWhiteSpace(t.PhaseName))
-            .GroupBy(t => new { t.CustomerId, t.PhaseName })
+        // STRICT: drop orphans up front so they can't leak through
+        var orphans = allDueTasks.Where(t =>
+                string.IsNullOrWhiteSpace(t.CustomerId) ||
+                string.IsNullOrWhiteSpace(t.PhaseName) ||
+                string.IsNullOrWhiteSpace(t.CategoryKey) ||
+                string.IsNullOrWhiteSpace(t.AnchorDateType) ||
+                !t.StartOffsetDays.HasValue)
             .ToList();
 
-        _log.Information("WorkflowFilter: Found {GroupCount} customer/phase groups", groups.Count);
+        if (orphans.Count > 0)
+        {
+            _log.Warning("WorkflowFilter: STRICT block of {Count} task(s) missing required metadata (CustomerId/PhaseName/CategoryKey/AnchorDateType/StartOffsetDays).",
+                orphans.Count);
+        }
+
+        var candidates = allDueTasks.Except(orphans).ToList();
+        if (candidates.Count == 0)
+        {
+            _log.Information("WorkflowFilter: No candidates remain after strict metadata check");
+            return eligible; // empty
+        }
+
+        // Correct scope: per Customer + Phase + AnchorDateType
+        var groups = candidates
+            .GroupBy(t => new { t.CustomerId, t.PhaseName, t.AnchorDateType })
+            .ToList();
+
+        _log.Information("WorkflowFilter: Found {GroupCount} customer/phase/anchor groups", groups.Count);
 
         var orderMap = _categoryOrderProvider.GetMap();
-        var catCmp = StringComparer.OrdinalIgnoreCase;
 
         foreach (var g in groups)
         {
-            var customerId = g.Key.CustomerId;
-            var phaseName = g.Key.PhaseName;
+            var customerId = g.Key.CustomerId!;
+            var phaseName = g.Key.PhaseName!;
+            var anchorDateType = g.Key.AnchorDateType!;
 
-            // Determine earliest-open category for this (customer, phase)
-            var distinctCategories = g.Select(t => t.CategoryKey)
-                                      .Where(k => !string.IsNullOrWhiteSpace(k))
-                                      .Distinct(catCmp)
-                                      .OrderBy(k =>
+            _log.Debug("WorkflowFilter: Processing group - Customer={CustomerId}, Phase={PhaseName}, Anchor={AnchorDateType}, TaskCount={Count}",
+                customerId, phaseName, anchorDateType, g.Count());
+
+            // Determine earliest-open category for this (customer, phase, anchor)
+            // Build list of (category, anchor) tuples from this group's tasks
+            var distinctCategories = g.Select(t => (Category: t.CategoryKey!, AnchorDateType: t.AnchorDateType!))
+                                      .Where(tuple => !string.IsNullOrWhiteSpace(tuple.Category) && !string.IsNullOrWhiteSpace(tuple.AnchorDateType))
+                                      .Distinct()
+                                      .OrderBy(tuple =>
                                       {
-                                          if (!orderMap.TryGetValue(k!, out var ord))
+                                          if (!orderMap.TryGetValue(tuple, out var ord))
                                           {
-                                              _log.Warning("WorkflowFilter: Unknown category '{CategoryKey}' for customer {CustomerId}, phase '{PhaseName}'. Treating as lowest priority.",
-                                                  k, customerId, phaseName);
+                                              _log.Warning("WorkflowFilter: Unknown category/anchor '{Category}/{AnchorDateType}' for customer {CustomerId}, phase '{PhaseName}'. Treating as lowest priority.",
+                                                  tuple.Category, tuple.AnchorDateType, customerId, phaseName);
                                               return int.MaxValue;
                                           }
                                           return ord;
                                       })
                                       .ToList();
 
-            string? earliestOpenCategory = null;
+            (string Category, string AnchorDateType)? earliestOpenCategory = null;
             foreach (var cat in distinctCategories)
             {
-                if (string.IsNullOrWhiteSpace(cat)) continue;
-                var complete = await IsCategoryCompleteAsync(customerId, phaseName, cat!, ct);
-                if (!complete)
-                {
-                    earliestOpenCategory = cat;
-                    break;
-                }
+                var complete = await IsCategoryCompleteAsync(customerId, phaseName, cat.Category, cat.AnchorDateType, ct);
+                if (!complete) { earliestOpenCategory = cat; break; }
             }
 
             if (earliestOpenCategory is null)
             {
-                _log.Information("WorkflowFilter: All categories complete for customer {CustomerId}, phase '{PhaseName}'.", customerId, phaseName);
+                _log.Information("WorkflowFilter: All categories complete for customer {CustomerId}, phase '{PhaseName}', anchor {AnchorDateType}.",
+                    customerId, phaseName, anchorDateType);
                 continue;
             }
 
-            // Determine earliest offset group (StartOffsetDays) that still has any open task in this category
-            var earliestOffset = await GetEarliestOpenOffsetAsync(customerId, phaseName, earliestOpenCategory, ct);
-            if (earliestOffset is null)
+            // Bucket JUST the chosen category (anchor already filtered by grouping)
+            var categoryBucket = g.Where(t => string.Equals(t.CategoryKey, earliestOpenCategory.Value.Category, StringComparison.OrdinalIgnoreCase))
+                                  .ToList();
+
+            // Determine earliest offset that still has any open task in this category
+            var earliestOffset = await GetEarliestOpenOffsetAsync(customerId, phaseName, earliestOpenCategory.Value.Category, earliestOpenCategory.Value.AnchorDateType, ct); if (earliestOffset is null)
             {
                 _log.Warning("WorkflowFilter: No open offset groups found for customer {CustomerId}, phase '{PhaseName}', category '{Category}'.",
-                    customerId, phaseName, earliestOpenCategory);
+                    customerId, phaseName, earliestOpenCategory.Value.Category);
                 continue;
             }
 
-            // Keep ONLY tasks in (earliest-open category, earliest-open offset). Tasks inside are parallel.
-            var kept = g.Where(t =>
-                        string.Equals(t.CategoryKey, earliestOpenCategory, StringComparison.OrdinalIgnoreCase) &&
-                        t.StartOffsetDays.HasValue &&
-                        t.StartOffsetDays.Value == earliestOffset.Value)
-                    .ToList();
+            // Keep ONLY tasks in (earliest-open category, earliest-open offset)
+            var kept = categoryBucket
+                .Where(t => t.StartOffsetDays.HasValue && t.StartOffsetDays.Value == earliestOffset.Value)
+                .ToList();
 
-            var skipped = g.Count() - kept.Count;
+            // Log missing offsets in the chosen category (excluded)
+            var missingOffsetInCategory = categoryBucket.Where(t => !t.StartOffsetDays.HasValue).Count();
 
-            _log.Information("gate.pick customer={CustomerId} phase={PhaseName} category=\"{Category}\" offset={Offset} kept={Kept} skipped={Skipped}",
-                customerId, phaseName, earliestOpenCategory, earliestOffset, kept.Count, skipped);
+            var skippedInCategory = categoryBucket.Count - kept.Count; // scoped to category, not whole group
 
-            // Warn on any due items in the chosen bucket missing StartOffsetDays (we cannot include them safely)
-            var missingOffset = g.Where(t =>
-                        string.Equals(t.CategoryKey, earliestOpenCategory, StringComparison.OrdinalIgnoreCase) &&
-                        !t.StartOffsetDays.HasValue)
-                    .ToList();
-            if (missingOffset.Count > 0)
-            {
-                _log.Warning("WorkflowFilter: {Count} task(s) in earliest-open category lack StartOffsetDays (customer={CustomerId}, phase='{PhaseName}', category='{Category}'). Excluding until backfilled.",
-                    missingOffset.Count, customerId, phaseName, earliestOpenCategory);
-            }
+            _log.Information("gate.pick customer={CustomerId} phase={PhaseName} anchor={AnchorDateType} category=\"{Category}\" offset={Offset} kept={Kept} skippedInCategory={Skipped} missingOffset={Missing}",
+                customerId, phaseName, anchorDateType, earliestOpenCategory.Value.Category, earliestOffset, kept.Count, skippedInCategory, missingOffsetInCategory);
 
             eligible.AddRange(kept);
-        }
-
-        // Transition-period: allow orphans (missing metadata) to pass
-        var orphanedTasks = allDueTasks
-            .Where(t => string.IsNullOrWhiteSpace(t.CustomerId)
-                        || string.IsNullOrWhiteSpace(t.PhaseName)
-                        || string.IsNullOrWhiteSpace(t.CategoryKey)
-                        || !t.StartOffsetDays.HasValue)
-            .ToList();
-
-        if (orphanedTasks.Count > 0)
-        {
-            _log.Warning("WorkflowFilter: {Count} task(s) missing workflow metadata (CustomerId, PhaseName, CategoryKey, or StartOffsetDays). Allowing during transition.",
-                orphanedTasks.Count);
-            eligible.AddRange(orphanedTasks);
         }
 
         _log.Information("WorkflowFilter: Filtering complete. Original={Original}, Eligible={Eligible}",
@@ -462,6 +461,7 @@ public sealed class ChaserJobHostedService : BackgroundService
 
         return eligible;
     }
+
 
 
 
@@ -491,7 +491,7 @@ public sealed class ChaserJobHostedService : BackgroundService
             categoryKey, customerId, phaseName, categoryTasks.Count);
 
         // Gate: only proceed if this is the earliest incomplete category for (customer, phase)
-        var isEarliest = await IsEarliestIncompleteCategoryAsync(customerId, phaseName, categoryKey, ct);
+        var isEarliest = await IsEarliestIncompleteCategoryAsync(customerId, phaseName, categoryKey, anchorDateType, ct);
         if (!isEarliest)
         {
             _log.Information(
@@ -513,6 +513,7 @@ public sealed class ChaserJobHostedService : BackgroundService
     /// </summary>
     private async Task<bool> IsEarliestIncompleteCategoryAsync(
         string customerId,
+        string phaseName,
         string categoryKey,
         string anchorDateType,
         CancellationToken ct)
@@ -543,7 +544,7 @@ public sealed class ChaserJobHostedService : BackgroundService
         for (int i = 0; i < currentCategoryIndex; i++)
         {
             var earlierCategory = workflowCategoryOrder[i];
-            var isEarlierCategoryComplete = await IsCategoryCompleteAsync(customerId, earlierCategory, anchorDateType, ct);
+            var isEarlierCategoryComplete = await IsCategoryCompleteAsync(customerId, phaseName, earlierCategory, anchorDateType, ct);
 
             if (!isEarlierCategoryComplete)
             {
@@ -620,15 +621,17 @@ public sealed class ChaserJobHostedService : BackgroundService
         _log.Information("WorkflowFilter: No PM Ensure Prepared tasks found. Processing all {Count} due tasks.", allDueTasks.Count);
         return allDueTasks; // No PM tasks due, process everything normally
     }
-    #region  Helper Classes
+
+    #region Helper Classes
     /// <summary>
     /// Checks if all tasks in a category are completed for the given customer.
     /// </summary>
     private async Task<bool> IsCategoryCompleteAsync(
-        string customerId,
-        string phaseName,
-        string categoryKey,
-        CancellationToken ct)
+    string customerId,
+    string phaseName,
+    string categoryKey,
+    string anchorDateType,
+    CancellationToken ct)
     {
         const string sql = @"
 SELECT COUNT(1)
@@ -636,6 +639,7 @@ FROM TaskIdMap
 WHERE CustomerId    = $customerId
   AND PhaseName     = $phaseName
   AND Category_Key  = $categoryKey
+  AND AnchorDateType = $anchorDateType
   AND State         = 'linked'
   AND (Status IS NULL OR Status <> 'Completed');";
 
@@ -651,25 +655,28 @@ WHERE CustomerId    = $customerId
         var remaining = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
         var isComplete = remaining == 0;
 
-        _log.Debug("WorkflowFilter: CategoryComplete? customer={CustomerId} phase='{PhaseName}' category='{CategoryKey}' remainingOpen={Remaining} => {Complete}",
-            customerId, phaseName, categoryKey, remaining, isComplete);
+        _log.Debug("WorkflowFilter: CategoryComplete? customer={CustomerId} phase='{PhaseName}' category='{CategoryKey}'" +
+            " anchor={AnchorDateType} remainingOpen={Remaining} => {Complete}", customerId, phaseName, categoryKey, anchorDateType,
+            remaining, isComplete);
 
         return isComplete;
     }
 
     private async Task<int?> GetEarliestOpenOffsetAsync(
-    string customerId,
-    string phaseName,
-    string categoryKey,
-    CancellationToken ct)
+        string customerId,
+        string phaseName,
+        string categoryKey,
+        string anchorDateType,
+        CancellationToken ct)
     {
-        // Find the lowest StartOffsetDays in this (customer, phase, category) that still has any NOT Completed tasks.
+        // Find the lowest StartOffsetDays in this (customer, phase, category, anchor) that still has any NOT Completed tasks.
         const string sql = @"
 SELECT MIN(StartOffsetDays)
 FROM TaskIdMap
 WHERE CustomerId    = $customerId
   AND PhaseName     = $phaseName
   AND Category_Key  = $categoryKey
+  AND AnchorDateType = $anchorDateType
   AND State         = 'linked'
   AND (Status IS NULL OR Status <> 'Completed');";
 
@@ -681,6 +688,7 @@ WHERE CustomerId    = $customerId
         cmd.Parameters.AddWithValue("$customerId", customerId);
         cmd.Parameters.AddWithValue("$phaseName", phaseName);
         cmd.Parameters.AddWithValue("$categoryKey", categoryKey);
+        cmd.Parameters.AddWithValue("$anchorDateType", anchorDateType);
 
         var obj = await cmd.ExecuteScalarAsync(ct);
         if (obj is DBNull or null) return null;
@@ -691,7 +699,6 @@ WHERE CustomerId    = $customerId
 
         return null;
     }
-
 
     #endregion
 }
