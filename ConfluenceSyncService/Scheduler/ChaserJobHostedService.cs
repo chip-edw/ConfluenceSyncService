@@ -353,99 +353,116 @@ public sealed class ChaserJobHostedService : BackgroundService
             return allDueTasks;
         }
 
-        _log.Information("WorkflowFilter: Applying sequential dependency filtering to {Count} due tasks", allDueTasks.Count);
+        _log.Information("WorkflowFilter: Applying sequential dependency filtering (category + earliest offset) to {Count} due tasks", allDueTasks.Count);
 
-        var eligibleTasks = new List<SqliteQueries.DueCandidate>();
+        var eligible = new List<SqliteQueries.DueCandidate>();
 
-        // ✅ Group by Customer + Phase (the correct gate scope)
+        // Correct scope: per Customer + Phase
         var groups = allDueTasks
-            .Where(t => !string.IsNullOrWhiteSpace(t.CustomerId)
-                        && !string.IsNullOrWhiteSpace(t.PhaseName))
+            .Where(t => !string.IsNullOrWhiteSpace(t.CustomerId) && !string.IsNullOrWhiteSpace(t.PhaseName))
             .GroupBy(t => new { t.CustomerId, t.PhaseName })
             .ToList();
 
         _log.Information("WorkflowFilter: Found {GroupCount} customer/phase groups", groups.Count);
 
-        // Load ordered categories once
-        var orderMap = _categoryOrderProvider.GetMap(); // throws if not loaded
-        var orderComparer = StringComparer.OrdinalIgnoreCase;
+        var orderMap = _categoryOrderProvider.GetMap();
+        var catCmp = StringComparer.OrdinalIgnoreCase;
 
         foreach (var g in groups)
         {
             var customerId = g.Key.CustomerId;
             var phaseName = g.Key.PhaseName;
 
-            // Distinct categories in this group, preserving template order
-            var distinctCategories = g
-                .Select(t => t.CategoryKey)
-                .Where(k => !string.IsNullOrWhiteSpace(k))
-                .Distinct(orderComparer)
-                .OrderBy(k =>
-                {
-                    // Unknown categories: push to the end but log once
-                    if (k is null) return int.MaxValue;
-                    if (!orderMap.TryGetValue(k, out var ord))
-                    {
-                        _log.Warning("WorkflowFilter: Unknown category '{CategoryKey}' for customer {CustomerId}, phase '{PhaseName}'. " +
-                                     "It is not present in the template order; treating as lowest priority.",
-                                     k, customerId, phaseName);
-                        return int.MaxValue;
-                    }
-                    return ord;
-                })
-                .ToList();
+            // Determine earliest-open category for this (customer, phase)
+            var distinctCategories = g.Select(t => t.CategoryKey)
+                                      .Where(k => !string.IsNullOrWhiteSpace(k))
+                                      .Distinct(catCmp)
+                                      .OrderBy(k =>
+                                      {
+                                          if (!orderMap.TryGetValue(k!, out var ord))
+                                          {
+                                              _log.Warning("WorkflowFilter: Unknown category '{CategoryKey}' for customer {CustomerId}, phase '{PhaseName}'. Treating as lowest priority.",
+                                                  k, customerId, phaseName);
+                                              return int.MaxValue;
+                                          }
+                                          return ord;
+                                      })
+                                      .ToList();
 
-            // Find the earliest category that is NOT complete for this customer+phase
-            string? earliestOpen = null;
+            string? earliestOpenCategory = null;
             foreach (var cat in distinctCategories)
             {
                 if (string.IsNullOrWhiteSpace(cat)) continue;
-
-                var complete = await IsCategoryCompleteAsync(customerId, phaseName, cat, ct);
+                var complete = await IsCategoryCompleteAsync(customerId, phaseName, cat!, ct);
                 if (!complete)
                 {
-                    earliestOpen = cat;
+                    earliestOpenCategory = cat;
                     break;
                 }
             }
 
-            if (earliestOpen is null)
+            if (earliestOpenCategory is null)
             {
-                _log.Information("WorkflowFilter: All categories complete for customer {CustomerId}, phase '{PhaseName}'. No eligible tasks.",
-                    customerId, phaseName);
+                _log.Information("WorkflowFilter: All categories complete for customer {CustomerId}, phase '{PhaseName}'.", customerId, phaseName);
                 continue;
             }
 
-            // Keep ONLY tasks in the earliest-open category (parallel within the category)
-            var kept = g.Where(t => string.Equals(t.CategoryKey, earliestOpen, StringComparison.OrdinalIgnoreCase)).ToList();
+            // Determine earliest offset group (StartOffsetDays) that still has any open task in this category
+            var earliestOffset = await GetEarliestOpenOffsetAsync(customerId, phaseName, earliestOpenCategory, ct);
+            if (earliestOffset is null)
+            {
+                _log.Warning("WorkflowFilter: No open offset groups found for customer {CustomerId}, phase '{PhaseName}', category '{Category}'.",
+                    customerId, phaseName, earliestOpenCategory);
+                continue;
+            }
+
+            // Keep ONLY tasks in (earliest-open category, earliest-open offset). Tasks inside are parallel.
+            var kept = g.Where(t =>
+                        string.Equals(t.CategoryKey, earliestOpenCategory, StringComparison.OrdinalIgnoreCase) &&
+                        t.StartOffsetDays.HasValue &&
+                        t.StartOffsetDays.Value == earliestOffset.Value)
+                    .ToList();
+
             var skipped = g.Count() - kept.Count;
 
-            _log.Information("gate.pick customer={CustomerId} phase={PhaseName} earliest=\"{Category}\" kept={Kept} skipped={Skipped}",
-                customerId, phaseName, earliestOpen, kept.Count, skipped);
+            _log.Information("gate.pick customer={CustomerId} phase={PhaseName} category=\"{Category}\" offset={Offset} kept={Kept} skipped={Skipped}",
+                customerId, phaseName, earliestOpenCategory, earliestOffset, kept.Count, skipped);
 
-            eligibleTasks.AddRange(kept);
+            // Warn on any due items in the chosen bucket missing StartOffsetDays (we cannot include them safely)
+            var missingOffset = g.Where(t =>
+                        string.Equals(t.CategoryKey, earliestOpenCategory, StringComparison.OrdinalIgnoreCase) &&
+                        !t.StartOffsetDays.HasValue)
+                    .ToList();
+            if (missingOffset.Count > 0)
+            {
+                _log.Warning("WorkflowFilter: {Count} task(s) in earliest-open category lack StartOffsetDays (customer={CustomerId}, phase='{PhaseName}', category='{Category}'). Excluding until backfilled.",
+                    missingOffset.Count, customerId, phaseName, earliestOpenCategory);
+            }
+
+            eligible.AddRange(kept);
         }
 
-        // Permissive pass-through for orphaned tasks during transition (unchanged)
+        // Transition-period: allow orphans (missing metadata) to pass
         var orphanedTasks = allDueTasks
             .Where(t => string.IsNullOrWhiteSpace(t.CustomerId)
+                        || string.IsNullOrWhiteSpace(t.PhaseName)
                         || string.IsNullOrWhiteSpace(t.CategoryKey)
-                        || !t.StartOffsetDays.HasValue
-                        || string.IsNullOrWhiteSpace(t.PhaseName))
+                        || !t.StartOffsetDays.HasValue)
             .ToList();
 
         if (orphanedTasks.Count > 0)
         {
-            _log.Warning("WorkflowFilter: {Count} tasks missing workflow metadata (CustomerId, PhaseName, CategoryKey, or StartOffsetDays). " +
-                         "Allowing during transition period.", orphanedTasks.Count);
-            eligibleTasks.AddRange(orphanedTasks);
+            _log.Warning("WorkflowFilter: {Count} task(s) missing workflow metadata (CustomerId, PhaseName, CategoryKey, or StartOffsetDays). Allowing during transition.",
+                orphanedTasks.Count);
+            eligible.AddRange(orphanedTasks);
         }
 
-        _log.Information("WorkflowFilter: Sequential filtering complete. Original={Original}, Eligible={Eligible}",
-            allDueTasks.Count, eligibleTasks.Count);
+        _log.Information("WorkflowFilter: Filtering complete. Original={Original}, Eligible={Eligible}",
+            allDueTasks.Count, eligible.Count);
 
-        return eligibleTasks;
+        return eligible;
     }
+
 
 
     /// <summary>
@@ -639,6 +656,42 @@ WHERE CustomerId    = $customerId
 
         return isComplete;
     }
+
+    private async Task<int?> GetEarliestOpenOffsetAsync(
+    string customerId,
+    string phaseName,
+    string categoryKey,
+    CancellationToken ct)
+    {
+        // Find the lowest StartOffsetDays in this (customer, phase, category) that still has any NOT Completed tasks.
+        const string sql = @"
+SELECT MIN(StartOffsetDays)
+FROM TaskIdMap
+WHERE CustomerId    = $customerId
+  AND PhaseName     = $phaseName
+  AND Category_Key  = $categoryKey
+  AND State         = 'linked'
+  AND (Status IS NULL OR Status <> 'Completed');";
+
+        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
+        await conn.OpenAsync(ct);
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$customerId", customerId);
+        cmd.Parameters.AddWithValue("$phaseName", phaseName);
+        cmd.Parameters.AddWithValue("$categoryKey", categoryKey);
+
+        var obj = await cmd.ExecuteScalarAsync(ct);
+        if (obj is DBNull or null) return null;
+
+        // SQLite stores ints as long; convert carefully
+        if (obj is long l) return unchecked((int)l);
+        if (int.TryParse(obj.ToString(), out var i)) return i;
+
+        return null;
+    }
+
 
     #endregion
 }
