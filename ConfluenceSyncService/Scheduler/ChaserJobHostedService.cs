@@ -397,6 +397,21 @@ public sealed class ChaserJobHostedService : BackgroundService
             _log.Debug("WorkflowFilter: Processing group - Customer={CustomerId}, Phase={PhaseName}, Anchor={AnchorDateType}, TaskCount={Count}",
                 customerId, phaseName, anchorDateType, g.Count());
 
+            // Cross-anchor dependency: HypercareEnd tasks cannot start until ALL GoLive tasks are complete
+            if (anchorDateType.Equals("HypercareEnd", StringComparison.OrdinalIgnoreCase))
+            {
+                var goLiveComplete = await IsAnchorTypeCompleteAsync(customerId, phaseName, "GoLive", ct);
+                if (!goLiveComplete)
+                {
+                    _log.Information("WorkflowFilter: HypercareEnd tasks for customer {CustomerId}, phase '{PhaseName}' are BLOCKED because GoLive workflow is not complete. Skipping {TaskCount} tasks.",
+                        customerId, phaseName, g.Count());
+                    continue; // Skip this entire anchor group
+                }
+
+                _log.Information("WorkflowFilter: GoLive workflow complete for customer {CustomerId}, phase '{PhaseName}'. HypercareEnd tasks are now eligible.",
+                    customerId, phaseName);
+            }
+
             // Determine earliest-open category for this (customer, phase, anchor)
             // Build list of (category, anchor) tuples from this group's tasks
             var distinctCategories = g.Select(t => (Category: t.CategoryKey!, AnchorDateType: t.AnchorDateType!))
@@ -461,8 +476,6 @@ public sealed class ChaserJobHostedService : BackgroundService
 
         return eligible;
     }
-
-
 
 
     /// <summary>
@@ -700,6 +713,43 @@ WHERE CustomerId    = $customerId
 
         return null;
     }
+
+    /// <summary>
+    /// Checks if all tasks for a specific anchor type are completed for the given customer/phase.
+    /// Used to enforce cross-anchor dependencies (e.g., HypercareEnd blocked until GoLive complete).
+    /// </summary>
+    private async Task<bool> IsAnchorTypeCompleteAsync(
+        string customerId,
+        string phaseName,
+        string anchorDateType,
+        CancellationToken ct)
+    {
+        const string sql = @"
+SELECT COUNT(1)
+FROM TaskIdMap
+WHERE CustomerId = $customerId
+  AND PhaseName = $phaseName
+  AND AnchorDateType = $anchorDateType
+  AND State = 'linked'
+  AND (Status IS NULL OR Status <> 'Completed');";
+
+        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$customerId", customerId);
+        cmd.Parameters.AddWithValue("$phaseName", phaseName);
+        cmd.Parameters.AddWithValue("$anchorDateType", anchorDateType);
+
+        var remaining = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+        var isComplete = remaining == 0;
+
+        _log.Debug("WorkflowFilter: AnchorTypeComplete? customer={CustomerId} phase='{PhaseName}' anchor={AnchorDateType} remainingOpen={Remaining} => {Complete}",
+            customerId, phaseName, anchorDateType, remaining, isComplete);
+
+        return isComplete;
+    }
+
 
     #endregion
 }
