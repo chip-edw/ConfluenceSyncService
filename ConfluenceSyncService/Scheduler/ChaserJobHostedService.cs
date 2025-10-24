@@ -651,6 +651,7 @@ WHERE CustomerId    = $customerId
         cmd.Parameters.AddWithValue("$customerId", customerId);
         cmd.Parameters.AddWithValue("$phaseName", phaseName);
         cmd.Parameters.AddWithValue("$categoryKey", categoryKey);
+        cmd.Parameters.AddWithValue("$anchorDateType", anchorDateType);
 
         var remaining = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
         var isComplete = remaining == 0;
