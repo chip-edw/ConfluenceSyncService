@@ -785,7 +785,16 @@ namespace ConfluenceSyncService.Services.Clients
         /// <summary>
         /// C2: Write-through on chase (Important, ChaseCount++, NextChaseAtUtc), using mapped internal names.
         /// </summary>
-        public async Task UpdateChaserFieldsAsync(long spItemId, bool important, bool incrementChase, DateTimeOffset nextChaseAtUtc, CancellationToken ct)
+        /// <summary>
+        /// C2: Write-through on chase (Important, ChaseCount++, NextChaseAtUtc, NotifiedAtUtc), using mapped internal names.
+        /// </summary>
+        public async Task UpdateChaserFieldsAsync(
+            long spItemId,
+            bool important,
+            bool incrementChase,
+            DateTimeOffset nextChaseAtUtc,
+            DateTimeOffset? notifiedAtUtc,  // ← NEW: Set on first notification only
+            CancellationToken ct)
         {
             var siteId = GetSupportSiteIdFromConfig();
             var listId = await GetPhaseTasksListIdAsync(siteId, ct);
@@ -794,6 +803,7 @@ namespace ConfluenceSyncService.Services.Clients
             var chaseField = ResolveField(listDisplayName, "ChaseCount");
             var importantField = ResolveField(listDisplayName, "Important");
             var nextChaseField = ResolveField(listDisplayName, "NextChaseAtUtc");
+            var notifiedAtField = ResolveField(listDisplayName, "NotifiedAtUtc");  // ← NEW
 
             int? newChaseCount = null;
 
@@ -823,8 +833,13 @@ namespace ConfluenceSyncService.Services.Clients
                 [importantField] = important,
                 [nextChaseField] = nextChaseAtUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)
             };
+
             if (newChaseCount.HasValue)
                 payload[chaseField] = newChaseCount.Value;
+
+            // ← NEW: Add NotifiedAtUtc if provided (first notification only)
+            if (notifiedAtUtc.HasValue)
+                payload[notifiedAtField] = notifiedAtUtc.Value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
 
             using var patchReq = new HttpRequestMessage(new HttpMethod("PATCH"), patchUrl)
             {
@@ -835,7 +850,6 @@ namespace ConfluenceSyncService.Services.Clients
             using var resp = await _httpClient.SendAsync(patchReq, ct);
             resp.EnsureSuccessStatusCode();
         }
-
         #region Helper methods
 
         // SharePoint number field read helper

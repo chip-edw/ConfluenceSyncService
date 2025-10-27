@@ -157,10 +157,9 @@ public sealed class ChaserJobHostedService : BackgroundService
                 enrichedCandidate.TaskId, enrichedCandidate.CompanyName, enrichedCandidate.DueDateUtc, enrichedCandidate.PhaseName);
 
 
-            if (string.Equals(statusDue.Status, "Completed", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(statusDue.Status, Models.TaskStatus.Completed, StringComparison.OrdinalIgnoreCase))
             {
-                // Cache completion status to prevent future queries
-                await SqliteQueries.UpdateTaskStatusAsync(_dbPath, t.TaskId, "Completed", _log, ct);
+                await SqliteQueries.UpdateTaskStatusAsync(_dbPath, t.TaskId, Models.TaskStatus.Completed, _log, ct);
                 _log.Information("SkipCompleted taskId={TaskId} (cached status)", t.TaskId);
                 continue;
             }
@@ -178,7 +177,6 @@ public sealed class ChaserJobHostedService : BackgroundService
 
             // If we're not in the send window, we only want to schedule nextChaseAtUtc.
             // In DryRun, DO NOT write to SharePoint; just log what would happen.
-            // (Note: even when in the window, we still need the nextSendUtc for TTL/ACK.)
             if (!inWindow)
             {
                 if (dryRunMode)
@@ -189,11 +187,11 @@ public sealed class ChaserJobHostedService : BackgroundService
                 }
                 else
                 {
-                    await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: false, nextChaseAtUtc: nextSendUtc, ct);
+                    // NOT in window: just update NextChaseAtUtc, don't notify
+                    await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: false, incrementChase: false, nextChaseAtUtc: nextSendUtc, notifiedAtUtc: null, ct);
                 }
-                // We do NOT continue here; allow downstream logic to skip on missing due date, etc.
+                continue; // Skip notification
             }
-
 
             // Skip Teams notification for tasks without due dates - cannot determine overdue status
             // SharePoint tracking (nextChaseAtUtc) is already updated above for proper scheduling
@@ -216,18 +214,35 @@ public sealed class ChaserJobHostedService : BackgroundService
                 continue; // Skip ACK link rotation, Teams notification, and chase count increment
             }
 
+            // 4) Detect first notification and calculate Important flag
+            bool isFirstNotification = string.IsNullOrWhiteSpace(t.RootMessageId);
+            var now = DateTimeOffset.UtcNow;
 
-            // 4) rotate link
+            // Calculate next chase time based on ChaseIntervalDays (not next business day)
+            var chaseInterval = TimeSpan.FromDays(_opts.ChaseIntervalDays);
+            var nextUtc = BusinessDayHelper.NextBusinessDayAtHourUtc(t.Region, _opts.SendHourLocal, now.Add(chaseInterval));
+
+            // Important flag: Set TRUE if they exceeded their response window
+            // NOT set based on DueDateUtc (that would penalize for upstream delays)
+            bool setImportant = false;
+            if (!isFirstNotification)
+            {
+                // They were notified before. Did they exceed their response window?
+                // We don't have NotifiedAtUtc in the cache, so we'll check: has enough time passed since we started chasing?
+                // Conservative approach: set Important if this is NOT the first chase (ChaseCount will be >0 after this notification)
+                // This means Important gets set on the SECOND notification (after first response window expired)
+                setImportant = true; // If it's not first notification, they already had their response window
+            }
+
+            // 5) Build notification text with project context
+            var overdueText = BuildOverdueText(enrichedCandidate, isFirstNotification);
+
+            // 6) Rotate ACK link
             var newVersion = (t.AckVersion <= 0 ? 1 : t.AckVersion) + 1;
-
-            // Calculate next chase time (will be used for both link expiration and database updates)
-            var nextUtc = BusinessDayHelper.NextBusinessDayAtHourUtc(t.Region, _opts.SendHourLocal, DateTimeOffset.UtcNow);
-
-            // ACK link expires when next chase is due
-            var expires = nextUtc;
-            var ttl = expires - DateTimeOffset.UtcNow;
-
+            var expires = nextUtc; // ACK link expires when next chase is due
+            var ttl = expires - now;
             var ackUrl = BuildAckUrl(t.TaskId, t.Region, t.AnchorDateType, expires, newVersion);
+
             _log.Debug("AckLinkRotate taskId={TaskId} oldVersion={Old} newVersion={New} ttlHours={Ttl} expUtc={Exp}",
                 t.TaskId, t.AckVersion, newVersion, ttl.TotalHours, expires);
 
@@ -235,31 +250,18 @@ public sealed class ChaserJobHostedService : BackgroundService
             {
                 _log.Information("DRY RUN: Would send Teams notification for TaskId={TaskId}, TaskName={TaskName}",
                     t.TaskId, t.TaskName);
-                _log.Information("DRY RUN: Would update SP ItemId={SpItemId}", t.SpItemId);
+                _log.Information("DRY RUN: Would update SP ItemId={SpItemId}, Important={Important}, NextChase={NextChase}",
+                    t.SpItemId, setImportant, nextUtc);
                 _log.Information("DRY RUN: Would update SQLite for TaskId={TaskId}", t.TaskId);
                 continue; // Skip to next task without doing any updates
             }
 
-            // 5) post to Teams thread (short text + card) with enriched context
-            var companyDisplay = string.IsNullOrWhiteSpace(enrichedCandidate.CompanyName) ? "Unassigned Company" : enrichedCandidate.CompanyName;
-            var phaseDisplay = string.IsNullOrWhiteSpace(enrichedCandidate.PhaseName) ? "—" : enrichedCandidate.PhaseName;
-            var dueDisplay = enrichedCandidate.DueDateUtc.HasValue
-                ? enrichedCandidate.DueDateUtc.Value.ToLocalTime().ToString("MMM d, yyyy")
-                : "No due date";
-
-
-
-
-
-
-            var overdueText = $"🔔 **{companyDisplay}** · Due: **{dueDisplay}** · Phase: *{phaseDisplay}*\n" +
-                              $"OVERDUE: {enrichedCandidate.TaskName} needs attention. Please review and click the ACK Link when Completed.";
-
+            // 7) Post to Teams thread with enriched context
             bool proceedWithUpdates = false;
 
             if (_teams is TeamsNotificationService tsvc)
             {
-                // New: send and capture IDs
+                // Send and capture IDs
                 var (ok, rootId, lastId) = await tsvc.PostChaserWithIdsAsync(
                     t.TeamId,
                     t.ChannelId,
@@ -269,13 +271,12 @@ public sealed class ChaserJobHostedService : BackgroundService
                     _opts.ThreadFallback,
                     ct);
 
-
                 _log.Information("TeamsPostResult taskId={TaskId} success={Success} rootId={RootId} lastId={LastId}",
                     t.TaskId, ok, rootId, lastId);
 
                 if (ok)
                 {
-                    // Persist message IDs (non-DryRun path only; we're already past DryRun continue)
+                    // Persist message IDs
                     if (string.IsNullOrWhiteSpace(t.RootMessageId) && !string.IsNullOrWhiteSpace(rootId))
                     {
                         await SqliteQueries.UpdateRootMessageIdAsync(_dbPath, t.TaskId, rootId, _log, dryRun: false, ct);
@@ -302,11 +303,10 @@ public sealed class ChaserJobHostedService : BackgroundService
                 {
                     _log.Error("TeamsPostFailed taskId={TaskId} (ID-capable path)", t.TaskId);
                 }
-
             }
             else
             {
-                // Backward-compatible fallback to existing interface
+                // Backward-compatible fallback
                 var ok = await _teams.PostChaserAsync(t.TeamId, t.ChannelId, t.RootMessageId, overdueText, ackUrl, _opts.ThreadFallback, ct);
                 _log.Information("TeamsPostResult taskId={TaskId} success={Success} (legacy path)", t.TaskId, ok);
                 proceedWithUpdates = ok;
@@ -319,20 +319,23 @@ public sealed class ChaserJobHostedService : BackgroundService
 
             _log.Debug("Attempting SharePoint update for taskId={TaskId}", t.TaskId);
 
-
-
-
-
-
-
-            // 6) write-through to SP (Important=true, ChaseCount+1, NextChaseAtUtc=nextUtc)
-            await _sp.UpdateChaserFieldsAsync(t.SpItemId, important: true, incrementChase: true, nextChaseAtUtc: nextUtc, ct);
-            _log.Information("SpUpdateSuccess taskId={TaskId} spItemId={SpItemId} nextChaseAtUtc={Next}", t.TaskId, t.SpItemId, nextUtc);
+            // 8) Write-through to SP with NotifiedAtUtc on first notification
+            var notifiedAt = isFirstNotification ? now : (DateTimeOffset?)null;
+            await _sp.UpdateChaserFieldsAsync(
+                t.SpItemId,
+                important: setImportant,           // TRUE if response window exceeded
+                incrementChase: true,               // ChaseCount++
+                nextChaseAtUtc: nextUtc,           // Now + ChaseIntervalDays
+                notifiedAtUtc: notifiedAt,         // Only set on first notification
+                ct
+            );
+            _log.Information("SpUpdateSuccess taskId={TaskId} spItemId={SpItemId} nextChaseAtUtc={Next} important={Important}",
+                t.TaskId, t.SpItemId, nextUtc, setImportant);
 
             _log.Debug("Attempting SQLite update for taskId={TaskId} newVersion={Version} expires={Expires}",
                 t.TaskId, newVersion, expires);
 
-            // 7) mirror to SQLite
+            // 9) Mirror to SQLite
             await SqliteQueries.UpdateChaserMirrorAsync(_dbPath, t.TaskId, newVersion, expires, nextUtc, _log, ct);
             _log.Information("SQLite update completed for taskId={TaskId}", t.TaskId);
         }
@@ -640,13 +643,13 @@ public sealed class ChaserJobHostedService : BackgroundService
     /// Checks if all tasks in a category are completed for the given customer.
     /// </summary>
     private async Task<bool> IsCategoryCompleteAsync(
-    string customerId,
-    string phaseName,
-    string categoryKey,
-    string anchorDateType,
-    CancellationToken ct)
+        string customerId,
+        string phaseName,
+        string categoryKey,
+        string anchorDateType,
+        CancellationToken ct)
     {
-        const string sql = @"
+        var sql = $@"
 SELECT COUNT(1)
 FROM TaskIdMap
 WHERE CustomerId    = $customerId
@@ -654,7 +657,7 @@ WHERE CustomerId    = $customerId
   AND Category_Key  = $categoryKey
   AND AnchorDateType = $anchorDateType
   AND State         = 'linked'
-  AND (Status IS NULL OR Status <> 'Completed');";
+  AND (Status IS NULL OR Status <> '{Models.TaskStatus.Completed}');";
 
         await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
         await conn.OpenAsync(ct);
@@ -684,7 +687,7 @@ WHERE CustomerId    = $customerId
         CancellationToken ct)
     {
         // Find the lowest StartOffsetDays in this (customer, phase, category, anchor) that still has any NOT Completed tasks.
-        const string sql = @"
+        var sql = $@"
 SELECT MIN(StartOffsetDays)
 FROM TaskIdMap
 WHERE CustomerId    = $customerId
@@ -692,7 +695,7 @@ WHERE CustomerId    = $customerId
   AND Category_Key  = $categoryKey
   AND AnchorDateType = $anchorDateType
   AND State         = 'linked'
-  AND (Status IS NULL OR Status <> 'Completed');";
+  AND (Status IS NULL OR Status <> '{Models.TaskStatus.Completed}');";
 
         await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
         await conn.OpenAsync(ct);
@@ -724,14 +727,14 @@ WHERE CustomerId    = $customerId
         string anchorDateType,
         CancellationToken ct)
     {
-        const string sql = @"
+        var sql = $@"
 SELECT COUNT(1)
 FROM TaskIdMap
 WHERE CustomerId = $customerId
   AND PhaseName = $phaseName
   AND AnchorDateType = $anchorDateType
   AND State = 'linked'
-  AND (Status IS NULL OR Status <> 'Completed');";
+  AND (Status IS NULL OR Status <> '{Models.TaskStatus.Completed}');";
 
         await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
         await conn.OpenAsync(ct);
@@ -750,6 +753,39 @@ WHERE CustomerId = $customerId
         return isComplete;
     }
 
+    /// <summary>
+    /// Builds the overdue notification text with project context and response window.
+    /// Shows how many days behind schedule (if overdue) and gives clear response deadline.
+    /// </summary>
+    private string BuildOverdueText(SqliteQueries.DueCandidate t, bool isFirstNotification)
+    {
+        var companyDisplay = string.IsNullOrWhiteSpace(t.CompanyName)
+            ? "Unassigned Company"
+            : t.CompanyName;
+
+        var phaseDisplay = string.IsNullOrWhiteSpace(t.PhaseName)
+            ? "—"
+            : t.PhaseName;
+
+        var dueDisplay = t.DueDateUtc.HasValue
+            ? t.DueDateUtc.Value.ToLocalTime().ToString("MMM d, yyyy")
+            : "No due date";
+
+        // Show project delay context (how far behind schedule)
+        var overdueContext = "";
+        if (t.DueDateUtc.HasValue && t.DueDateUtc.Value < DateTimeOffset.UtcNow)
+        {
+            var daysLate = (int)(DateTimeOffset.UtcNow - t.DueDateUtc.Value).TotalDays;
+            overdueContext = $" (project {daysLate} days behind schedule)";
+        }
+
+        var urgency = isFirstNotification
+            ? $"This task requires your attention. You have {_opts.ChaseIntervalDays} business days to respond."
+            : $"This task still requires your attention. Please respond within {_opts.ChaseIntervalDays} business days.";
+
+        return $"🔔 **{companyDisplay}** · Due: **{dueDisplay}{overdueContext}** · Phase: *{phaseDisplay}*\n" +
+               $"OVERDUE: {t.TaskName} {urgency}";
+    }
 
     #endregion
 }

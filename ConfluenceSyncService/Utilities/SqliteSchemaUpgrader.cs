@@ -73,18 +73,25 @@ public static class SqliteSchemaUpgrader
             AddCol("ALTER TABLE TaskIdMap ADD COLUMN Status TEXT NULL;");
             added.Add("TaskIdMap.Status");
         }
-        // NEW: Add Category_Key for sequential workflow dependency tracking
+        // NEW: Add DueDateUtc for project timeline tracking (immutable, for reporting)
+        if (!HasCol("DueDateUtc"))
+        {
+            AddCol("ALTER TABLE TaskIdMap ADD COLUMN DueDateUtc TEXT NULL;");
+            added.Add("TaskIdMap.DueDateUtc");
+        }
+        //  Add Category_Key for sequential workflow dependency tracking
         if (!HasCol("Category_Key"))
         {
             AddCol("ALTER TABLE TaskIdMap ADD COLUMN Category_Key TEXT NULL;");
             added.Add("TaskIdMap.Category_Key");
         }
-        // NEW: Add StartOffsetDays for sequential workflow dependency filtering
+        // Add StartOffsetDays for sequential workflow dependency filtering
         if (!HasCol("StartOffsetDays"))
         {
             AddCol("ALTER TABLE TaskIdMap ADD COLUMN StartOffsetDays INTEGER NULL;");
             added.Add("TaskIdMap.StartOffsetDays");
         }
+
 
         // === TableSyncStates columns ===
         if (!HasCol("SyncTracker", "TableSyncStates"))

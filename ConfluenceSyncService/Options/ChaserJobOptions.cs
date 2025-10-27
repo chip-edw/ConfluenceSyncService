@@ -8,6 +8,7 @@ public sealed class ChaserJobOptions
     public int BatchSize { get; set; } = 50;
     public string QuerySource { get; set; } = "SQLiteFirst"; // "SharePoint"|"SQLiteFirst"|"Hybrid"
     public int SendHourLocal { get; set; } = 9;
+    public int ChaseIntervalDays { get; set; } = 2;
     public BusinessWindowOptions BusinessWindow { get; set; } = new();
     public string ThreadFallback { get; set; } = "RootNew"; // "RootNew"|"Skip"
     public SafetyOptions Safety { get; set; } = new();

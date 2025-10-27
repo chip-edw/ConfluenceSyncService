@@ -21,13 +21,12 @@ public static class SqliteQueries
         string PhaseName,              // From TaskIdMap table
         string CompanyName,            // Will be populated from SharePoint
         DateTimeOffset? DueDateUtc);   // Will be populated from SharePoint
-
     public static async Task<List<DueCandidate>> GetDueChaserCandidatesAsync(string dbPath, int limit, Serilog.ILogger log, CancellationToken ct)
     {
         using var conn = new SqliteConnection($"Data Source={dbPath};");
         await conn.OpenAsync(ct);
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"
+        cmd.CommandText = $@"
  SELECT TaskId, SpItemId, TaskName, Region, AnchorDateType, TeamId, ChannelId, RootMessageId, 
         IFNULL(AckVersion,0) as AckVersion, 
         IFNULL(CustomerId,'') as CustomerId,
@@ -35,10 +34,16 @@ public static class SqliteQueries
         IFNULL(Category_Key,'') as Category_Key,
         IFNULL(PhaseName,'') as PhaseName
  FROM TaskIdMap
- WHERE NextChaseAtUtcCached IS NOT NULL
-   AND datetime(NextChaseAtUtcCached) <= datetime('now')
-   AND (Status IS NULL OR Status != 'Completed')
- ORDER BY datetime(NextChaseAtUtcCached) ASC
+ WHERE (
+   -- Case 1: Never notified yet, but project due date reached
+   (NextChaseAtUtcCached IS NULL AND datetime(DueDateUtc) <= datetime('now'))
+   OR
+   -- Case 2: Already notified, next chase interval reached
+   (NextChaseAtUtcCached IS NOT NULL AND datetime(NextChaseAtUtcCached) <= datetime('now'))
+ )
+ AND (Status IS NULL OR Status != '{Models.TaskStatus.Completed}')
+ AND State = 'linked'
+ ORDER BY datetime(IFNULL(NextChaseAtUtcCached, DueDateUtc)) ASC
  LIMIT $limit;";
         cmd.Parameters.AddWithValue("$limit", limit);
 
@@ -66,7 +71,6 @@ public static class SqliteQueries
         }
         return list;
     }
-
     /// <summary>
     /// Gets all tasks for a specific customer and anchor date type to check group completion status.
     /// Used by sequential dependency filtering.

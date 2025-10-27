@@ -48,5 +48,6 @@ public class TaskIdMap
     public string? AnchorDateType { get; set; }
     public string? Status { get; set; }
     public int? StartOffsetDays { get; set; }
+    public DateTimeOffset? DueDateUtc { get; set; }
 
 }

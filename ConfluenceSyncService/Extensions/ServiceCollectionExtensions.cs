@@ -264,7 +264,6 @@ namespace ConfluenceSyncService.Extensions
                 Log.Information("Full mode: Adding background services");
                 // Full mode (VM): run background services
                 services.AddHostedService(provider => provider.GetRequiredService<Worker>());
-                services.AddHostedService<ChaserService>();
                 services.AddHostedService<DatabaseMaintenanceHostedService>();
             }
             else
