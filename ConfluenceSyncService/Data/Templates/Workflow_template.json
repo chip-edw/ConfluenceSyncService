@@ -14,7 +14,7 @@
     {
       "Key": "SupportTransitionPacketDeliveredT4Weeks_Delivered",
       "Category": "Support Transition Packet Delivered - T-4 weeks",
-      "TaskName": "Delivered",
+      "TaskName": "Validate Packet Delivered",
       "Role": "Project PM",
       "AnchorDateType": "GoLive",
       "StartOffsetDays": -15,
