@@ -277,7 +277,7 @@ namespace ConfluenceSyncService.Teams
             {
                 body = new
                 {
-                    contentType = "text",
+                    contentType = "html",  // Changed from "text" to enable formatting
                     content = text
                 }
             };

@@ -423,6 +423,11 @@ catch (Exception ex)
   - Send channel message containing a “Mark complete” link.
 - **Auto-advance** (optional): when the last task in the current group completes, notify the next eligible group. When the category completes, the next category becomes eligible.
 
+**Implementation Pointers**
+- **Classes:** `TeamsNotificationService` (sending + chasers), `ChaserService` (schedule), `AckActionHandler` (ACK endpoint), `SignedLinkGenerator` + HMAC signer (links).
+- **Threading State:** `TaskIdMap` stores `RootMessageId` / `LastMessageId`, `AckVersion`, and next-chase timestamps to prevent duplicate sends and ensure replies thread correctly.
+
+
 ## Debugging and Monitoring
 
 ### Debug Logging

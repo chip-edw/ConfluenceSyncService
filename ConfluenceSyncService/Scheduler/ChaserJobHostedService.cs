@@ -783,8 +783,8 @@ WHERE CustomerId = $customerId
             ? $"This task requires your attention. You have {_opts.ChaseIntervalDays} business days to respond."
             : $"This task still requires your attention. Please respond within {_opts.ChaseIntervalDays} business days.";
 
-        return $"🔔 **{companyDisplay}** · Due: **{dueDisplay}{overdueContext}** · Phase: *{phaseDisplay}*\n" +
-               $"OVERDUE: {t.TaskName} {urgency}";
+        return $"🔔 <strong>{companyDisplay}</strong> &middot; Due: <strong>{dueDisplay}{overdueContext}</strong> &middot; Phase: <em>{phaseDisplay}</em><br/>" +
+               $"OVERDUE: <strong>{t.TaskName}</strong> {urgency}";
     }
 
     #endregion

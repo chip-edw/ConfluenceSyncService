@@ -35,9 +35,19 @@ The system is architected for long-term extensibility to integrate other SaaS pl
 
 ## Documentation
 
-- **[Sync Architecture Documentation](./docs/SYNC_ARCHITECTURE.md)** – Detailed technical documentation of the bidirectional sync system, including field mapping, change detection, and performance characteristics  
+- **[Workflow Architecture](./docs/workflow_architecture.md)**
+- **[Sync Architecture](./docs/sync_architecture.md)** – Detailed technical documentation of the bidirectional sync system, including field mapping, change detection, and performance characteristics
+- **[Notifications & ACK Architecture](./docs/NOTIFICATIONS_ACK_ARCHITECTURE.md)**
 - **API Documentation** – *(Coming Soon)*  
 - **Deployment Guide** – *(Coming Soon)*  
+
+---
+
+## Start Here: Teams Notifications & ACK
+
+- **What it does:** Sends initial Teams notifications when a task group becomes eligible, then posts chasers as threaded replies if tasks go overdue. Users click a signed **Mark Complete** link to acknowledge.
+- **How to wire it:** Configure your public base URL, Teams team/channel ids, and HMAC secret (Key Vault recommended). Then run the worker—initial messages appear automatically when the first eligible group is detected.
+- **Learn more:** See [Notifications & ACK Architecture](./docs/NOTIFICATIONS_ACK_ARCHITECTURE.md).
 
 ---
 
