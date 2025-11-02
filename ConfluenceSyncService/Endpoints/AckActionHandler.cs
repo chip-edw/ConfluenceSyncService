@@ -54,17 +54,17 @@ namespace ConfluenceSyncService.Endpoints
                 else
                 {
                     // 2. Update SQLite cache to match SharePoint
-                    // The 'id' parameter is the SpItemId, so we need to look up TaskId first
-                    if (long.TryParse(id, out var spItemId))
+                    // The 'id' parameter is the TaskId
+                    if (long.TryParse(id, out var taskId))
                     {
                         try
                         {
-                            await UpdateCacheStatusAsync(spItemId, Models.TaskStatus.Completed, ct);
-                            log.LogInformation("ACK: Updated SQLite cache Status='Completed' for SpItemId={SpItemId}", spItemId);
+                            await UpdateCacheStatusAsync(taskId, Models.TaskStatus.Completed, ct);
+                            log.LogInformation("ACK: Updated SQLite cache Status='Completed' for TaskId={TaskId}", taskId);
                         }
                         catch (Exception cacheEx)
                         {
-                            log.LogError(cacheEx, "ACK: Failed to update SQLite cache for SpItemId={SpItemId}. Cache now stale!", spItemId);
+                            log.LogError(cacheEx, "ACK: Failed to update SQLite cache for TaskId={TaskId}. Cache now stale!", taskId);
                             // Don't fail the ACK - SharePoint is updated, cache will heal eventually
                         }
                     }
@@ -80,15 +80,15 @@ namespace ConfluenceSyncService.Endpoints
         }
 
         /// <summary>
-        /// Updates the SQLite cache Status field for a task identified by SpItemId.
+        /// Updates the SQLite cache Status field for a task identified by TaskId.
         /// This keeps the cache in sync with SharePoint after ACK.
         /// </summary>
-        private async Task UpdateCacheStatusAsync(long spItemId, string status, CancellationToken ct)
+        private async Task UpdateCacheStatusAsync(long taskId, string status, CancellationToken ct)
         {
             const string sql = @"
-                UPDATE TaskIdMap
-                SET Status = $status
-                WHERE SpItemId = $spItemId;";
+        UPDATE TaskIdMap
+        SET Status = $status
+        WHERE TaskId = $taskId;";
 
             await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
             await conn.OpenAsync(ct);
@@ -96,17 +96,17 @@ namespace ConfluenceSyncService.Endpoints
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = sql;
             cmd.Parameters.AddWithValue("$status", status);
-            cmd.Parameters.AddWithValue("$spItemId", spItemId);
+            cmd.Parameters.AddWithValue("$taskId", taskId);  // Changed parameter name
 
             var rows = await cmd.ExecuteNonQueryAsync(ct);
 
             if (rows == 0)
             {
-                log.LogWarning("ACK cache update: 0 rows affected for SpItemId={SpItemId}. Task may not exist in cache.", spItemId);
+                log.LogWarning("ACK cache update: 0 rows affected for TaskId={TaskId}. Task may not exist in cache.", taskId);
             }
             else
             {
-                log.LogInformation("ACK cache update: Updated {Rows} row(s) for SpItemId={SpItemId} to Status='{Status}'", rows, spItemId, status);
+                log.LogInformation("ACK cache update: Updated {Rows} row(s) for TaskId={TaskId} to Status='{Status}'", rows, taskId, status);
             }
         }
 
