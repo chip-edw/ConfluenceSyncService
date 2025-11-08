@@ -2,6 +2,7 @@ using ConfluenceSyncService.Identity;
 using ConfluenceSyncService.Options;
 using ConfluenceSyncService.Security;
 using ConfluenceSyncService.SharePoint;
+using ConfluenceSyncService.Teams;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 
@@ -13,12 +14,14 @@ namespace ConfluenceSyncService.Endpoints
         ISharePointTaskUpdater sp,
         IOptions<AckLinkOptions> ackOpts,
         ILogger<AckActionHandler> log,
-        IConfiguration config,           // ← ADD THIS
-        IHostEnvironment env)            // ← ADD THIS
+        IConfiguration config,
+        IHostEnvironment env,
+        INotificationService teamsNotificationService)
     {
         private readonly string _dbPath = ExtractSqlitePathOrFallback(
             config.GetConnectionString("ConfluenceSync"),
             env.ContentRootPath);
+        private readonly INotificationService _teamsNotificationService = teamsNotificationService;
 
         public async Task<IResult> HandleAsync(HttpContext ctx, CancellationToken ct)
         {
@@ -61,6 +64,48 @@ namespace ConfluenceSyncService.Endpoints
                         {
                             await UpdateCacheStatusAsync(taskId, Models.TaskStatus.Completed, ct);
                             log.LogInformation("ACK: Updated SQLite cache Status='Completed' for TaskId={TaskId}", taskId);
+
+                            // 3. Update Teams messages to show acknowledgment
+                            try
+                            {
+                                var (teamId, channelId, rootMessageId, lastMessageId) = await GetTeamsMessageIdsAsync(taskId, ct);
+
+                                if (!string.IsNullOrWhiteSpace(teamId) &&
+                                    !string.IsNullOrWhiteSpace(channelId) &&
+                                    !string.IsNullOrWhiteSpace(lastMessageId))
+                                {
+                                    var acknowledgedAt = DateTimeOffset.UtcNow;
+                                    var updateSuccess = await teamsNotificationService.UpdateMessageAsAcknowledgedAsync(
+                                        teamId,
+                                        channelId,
+                                        lastMessageId,
+                                        ackBy,
+                                        acknowledgedAt,
+                                        ct);
+
+                                    if (updateSuccess)
+                                    {
+                                        log.LogInformation("ACK: Successfully updated Teams message {MessageId} for TaskId={TaskId}",
+                                            lastMessageId, taskId);
+                                    }
+                                    else
+                                    {
+                                        log.LogWarning("ACK: Failed to update Teams message {MessageId} for TaskId={TaskId}",
+                                            lastMessageId, taskId);
+                                    }
+                                }
+                                else
+                                {
+                                    log.LogInformation("ACK: No Teams message IDs found for TaskId={TaskId}, skipping message update",
+                                        taskId);
+                                }
+                            }
+                            catch (Exception teamsEx)
+                            {
+                                log.LogError(teamsEx, "ACK: Exception updating Teams message for TaskId={TaskId}. ACK still successful.",
+                                    taskId);
+                                // Don't fail the ACK - SharePoint and cache are updated
+                            }
                         }
                         catch (Exception cacheEx)
                         {
@@ -108,6 +153,40 @@ namespace ConfluenceSyncService.Endpoints
             {
                 log.LogInformation("ACK cache update: Updated {Rows} row(s) for TaskId={TaskId} to Status='{Status}'", rows, taskId, status);
             }
+        }
+
+        /// <summary>
+        /// Retrieves Teams message threading information for a task from the SQLite cache.
+        /// Returns (TeamId, ChannelId, RootMessageId, LastMessageId) or nulls if not found.
+        /// </summary>
+        private async Task<(string? TeamId, string? ChannelId, string? RootMessageId, string? LastMessageId)>
+            GetTeamsMessageIdsAsync(long taskId, CancellationToken ct)
+        {
+            const string sql = @"
+        SELECT TeamId, ChannelId, RootMessageId, LastMessageId
+        FROM TaskIdMap
+        WHERE TaskId = $taskId;";
+
+            await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
+            await conn.OpenAsync(ct);
+
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = sql;
+            cmd.Parameters.AddWithValue("$taskId", taskId);
+
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+            if (await reader.ReadAsync(ct))
+            {
+                var teamId = reader.IsDBNull(0) ? null : reader.GetString(0);
+                var channelId = reader.IsDBNull(1) ? null : reader.GetString(1);
+                var rootMessageId = reader.IsDBNull(2) ? null : reader.GetString(2);
+                var lastMessageId = reader.IsDBNull(3) ? null : reader.GetString(3);
+
+                return (teamId, channelId, rootMessageId, lastMessageId);
+            }
+
+            return (null, null, null, null);
         }
 
         private static string ExtractSqlitePathOrFallback(string? connectionString, string contentRootPath)

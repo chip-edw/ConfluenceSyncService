@@ -20,9 +20,23 @@ namespace ConfluenceSyncService.Teams
         /// If the body contains a link, the first <a href="..."> is extracted and added as an Adaptive Card button.
         /// Also stamps NotifiedAtUtc on the SharePoint item.
         /// </summary>
-        Task NotifyTaskAsync(string listId, string itemId, string htmlBody, string? mentionUserObjectId, string? mentionText, CancellationToken ct);
+        Task NotifyTaskAsync(string listId, string itemId, string htmlBody, string? mentionUserObjectId,
+            string? mentionText, CancellationToken ct);
+
         Task<bool> PostChaserAsync(string teamId, string channelId, string rootMessageId,
             string overdueText, string ackUrl, string threadFallback, CancellationToken ct);
+
+        /// <summary>
+        /// Updates a Teams message to show it has been acknowledged.
+        /// Updates the message content to show completion status and removes the action link.
+        /// </summary>
+        Task<bool> UpdateMessageAsAcknowledgedAsync(
+            string teamId,
+            string channelId,
+            string messageId,
+            string acknowledgedBy,
+            DateTimeOffset acknowledgedAt,
+            CancellationToken ct);
     }
 
     /// <summary>
@@ -424,6 +438,69 @@ namespace ConfluenceSyncService.Teams
 
             // Skip if we aren't allowed to create a new thread.
             return (false, null, null);
+        }
+
+        /// <summary>
+        /// Updates a Teams message to show it has been acknowledged.
+        /// Replaces the message content with acknowledgment status.
+        /// </summary>
+        public async Task<bool> UpdateMessageAsAcknowledgedAsync(
+            string teamId,
+            string channelId,
+            string messageId,
+            string acknowledgedBy,
+            DateTimeOffset acknowledgedAt,
+            CancellationToken ct)
+        {
+            try
+            {
+                var http = await CreateGraphClientAsync(ct);
+
+                // Format the acknowledgment timestamp in a readable format
+                var acknowledgedTime = acknowledgedAt.ToLocalTime().ToString("MMM d, yyyy h:mm tt");
+
+                // Build the updated message content
+                var updatedContent = $@"
+<p style='color: green;'><strong>✅ Acknowledged by {acknowledgedBy}</strong></p>
+<p style='color: green;'>Completed at: {acknowledgedTime}</p>
+<p><em>This task has been marked as complete. No further action required.</em></p>";
+
+                // Prepare the update payload
+                var updatePayload = new
+                {
+                    body = new
+                    {
+                        contentType = "html",
+                        content = updatedContent
+                    }
+                };
+
+                // PATCH the message
+                var updateUrl = $"/v1.0/teams/{teamId}/channels/{channelId}/messages/{messageId}";
+
+                Log.Information("Updating Teams message: TeamId={TeamId}, ChannelId={ChannelId}, MessageId={MessageId}, AckedBy={AckedBy}",
+                    teamId, channelId, messageId, acknowledgedBy);
+
+                var response = await http.PatchAsync(updateUrl, JsonContent.Create(updatePayload), ct);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync(ct);
+                    Log.Error("Failed to update Teams message: Status={Status}, Error={Error}, URL={Url}",
+                        response.StatusCode, errorContent, updateUrl);
+                    return false;
+                }
+
+                Log.Information("Successfully updated Teams message {MessageId} to show acknowledgment by {AckedBy}",
+                    messageId, acknowledgedBy);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Exception while updating Teams message {MessageId} for acknowledgment", messageId);
+                return false;
+            }
         }
 
         /// <summary>
