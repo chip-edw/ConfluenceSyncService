@@ -130,7 +130,7 @@ public sealed class ChaserJobHostedService : BackgroundService
                 task.TaskId, task.TaskName, task.CustomerId, task.StartOffsetDays);
         }
 
-        foreach (var t in filteredTasks) // Changed from 'due' to 'filteredTasks'
+        foreach (var t in filteredTasks)
         {
             _log.Information("Processing task: TaskId={TaskId}, TeamId={TeamId}, ChannelId={ChannelId}, RootMessageId={RootMessageId}," +
                 " SpItemId={SpItemId}", t.TaskId, t.TeamId, t.ChannelId, t.RootMessageId, t.SpItemId);
@@ -237,14 +237,18 @@ public sealed class ChaserJobHostedService : BackgroundService
             // 5) Build notification text with project context
             var overdueText = BuildOverdueText(enrichedCandidate, isFirstNotification);
 
-            // 6) Rotate ACK link
-            var newVersion = (t.AckVersion <= 0 ? 1 : t.AckVersion) + 1;
+            // 6) Build ACK link with NEXT version (don't increment database value yet)
+            // CRITICAL: AckVersion starts as NULL for new tasks (never notified)
+            // Only increment to 1 AFTER successful notification, then 2, 3, etc.
+            // NULL → 1 (first notification) → 2 (second) → 3 (third)...
+            // This prevents premature version increments when notifications fail.
+            var currentVersion = t.AckVersion ?? 0;
             var expires = nextUtc; // ACK link expires when next chase is due
             var ttl = expires - now;
-            var ackUrl = BuildAckUrl(t.TaskId, t.Region, t.AnchorDateType, expires, newVersion);
+            var ackUrl = BuildAckUrl(t.TaskId, t.Region, t.AnchorDateType, expires, currentVersion + 1);
 
-            _log.Debug("AckLinkRotate taskId={TaskId} oldVersion={Old} newVersion={New} ttlHours={Ttl} expUtc={Exp}",
-                t.TaskId, t.AckVersion, newVersion, ttl.TotalHours, expires);
+            _log.Debug("AckLinkRotate taskId={TaskId} currentVersion={Current} nextVersion={Next} ttlHours={Ttl} expUtc={Exp}",
+                t.TaskId, currentVersion, currentVersion + 1, ttl.TotalHours, expires);
 
             if (dryRunMode)
             {
@@ -312,10 +316,15 @@ public sealed class ChaserJobHostedService : BackgroundService
                 proceedWithUpdates = ok;
             }
 
+            // ONLY proceed if Teams notification succeeded
             if (!proceedWithUpdates)
             {
+                _log.Warning("Skipping SharePoint and SQLite updates for TaskId={TaskId} because Teams notification failed", t.TaskId);
                 continue;
             }
+
+            // NOW increment version since notification succeeded
+            var newVersion = currentVersion + 1;
 
             _log.Debug("Attempting SharePoint update for taskId={TaskId}", t.TaskId);
 
@@ -335,7 +344,7 @@ public sealed class ChaserJobHostedService : BackgroundService
             _log.Debug("Attempting SQLite update for taskId={TaskId} newVersion={Version} expires={Expires}",
                 t.TaskId, newVersion, expires);
 
-            // 9) Mirror to SQLite
+            // 9) Mirror to SQLite (only after Teams notification succeeded)
             await SqliteQueries.UpdateChaserMirrorAsync(_dbPath, t.TaskId, newVersion, expires, nextUtc, _log, ct);
             _log.Information("SQLite update completed for taskId={TaskId}", t.TaskId);
         }

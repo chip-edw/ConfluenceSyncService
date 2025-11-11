@@ -11,8 +11,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ConfluenceSyncService.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20250721101919_AddTableSyncState")]
-    partial class AddTableSyncState
+    [Migration("20251111143250_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -151,6 +151,9 @@ namespace ConfluenceSyncService.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("CustomerId")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("CustomerName")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -177,6 +180,9 @@ namespace ConfluenceSyncService.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("SyncTracker")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("TEXT");
 
@@ -186,6 +192,115 @@ namespace ConfluenceSyncService.Migrations
                         .IsUnique();
 
                     b.ToTable("TableSyncStates");
+                });
+
+            modelBuilder.Entity("ConfluenceSyncService.Models.TaskIdMap", b =>
+                {
+                    b.Property<int>("TaskId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("AckExpiresUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("AckVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("AnchorDateType")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Category_Key")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ChannelId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CorrelationId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("CustomerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("DueDateUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("LastChaseAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("LastMessageId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ListKey")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("PhaseTasks");
+
+                    b.Property<DateTimeOffset?>("NextChaseAtUtcCached")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PhaseName")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Region")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RootMessageId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SpItemId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("StartOffsetDays")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("reserved");
+
+                    b.Property<string>("Status")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TaskName")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TeamId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("WorkflowId")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TaskId");
+
+                    b.HasIndex("AckExpiresUtc")
+                        .HasDatabaseName("IX_TaskIdMap_AckExpiresUtc");
+
+                    b.HasIndex("CorrelationId")
+                        .HasDatabaseName("IX_TaskIdMap_CorrelationId");
+
+                    b.HasIndex("NextChaseAtUtcCached")
+                        .HasDatabaseName("IX_TaskIdMap_NextChaseAtUtcCached");
+
+                    b.HasIndex("SpItemId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_TaskIdMap_SpItemId");
+
+                    b.HasIndex("TeamId", "ChannelId")
+                        .HasDatabaseName("IX_TaskIdMap_TeamId_ChannelId");
+
+                    b.HasIndex("CustomerId", "PhaseName", "TaskName", "WorkflowId")
+                        .HasDatabaseName("IX_TaskIdMap_CustomerId_PhaseName_TaskName_WorkflowId");
+
+                    b.ToTable("TaskIdMap", (string)null);
                 });
 
             modelBuilder.Entity("ConfluenceSyncService.Models.SyncState", b =>

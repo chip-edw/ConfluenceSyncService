@@ -14,7 +14,7 @@ public static class SqliteQueries
         string TeamId,
         string ChannelId,
         string RootMessageId,
-        int AckVersion,
+        int? AckVersion,
         string CustomerId,
         int? StartOffsetDays,
         string CategoryKey,

@@ -200,13 +200,14 @@ namespace ConfluenceSyncService.Migrations
                     b.Property<DateTime?>("AckExpiresUtc")
                         .HasColumnType("TEXT");
 
-                    b.Property<int>("AckVersion")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasDefaultValue(1);
+                    b.Property<int?>("AckVersion")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("AnchorDateType")
                         .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Category_Key")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("ChannelId")
@@ -221,6 +222,9 @@ namespace ConfluenceSyncService.Migrations
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
                     b.Property<string>("CustomerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("DueDateUtc")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset?>("LastChaseAtUtc")

@@ -124,7 +124,7 @@ namespace ConfluenceSyncService.Models
                 entity.Property(e => e.ListKey).HasDefaultValue("PhaseTasks").IsRequired();
                 entity.Property(e => e.State).HasDefaultValue("reserved").IsRequired();
                 entity.Property(e => e.CreatedUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
-                entity.Property(e => e.AckVersion).HasDefaultValue(1).IsRequired();
+                entity.Property(e => e.AckVersion).IsRequired(false);
                 // C2 fields used by the chaser
                 entity.Property(e => e.NextChaseAtUtcCached); // DateTimeOffset?
                 entity.Property(e => e.LastChaseAtUtc);       // DateTimeOffset?

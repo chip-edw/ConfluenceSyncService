@@ -40,7 +40,7 @@ public class TaskIdMap
     public string? LastMessageId { get; set; }  // last post in the thread (optional)
 
     // ACK link control
-    public int AckVersion { get; set; } = 0;            // rotate per send to invalidate older links
+    public int? AckVersion { get; set; }        // rotate per send to invalidate older links
     public DateTime? AckExpiresUtc { get; set; }        // optional bookkeeping for current link expiry
     public DateTimeOffset? NextChaseAtUtcCached { get; set; }
     public DateTimeOffset? LastChaseAtUtc { get; set; }
