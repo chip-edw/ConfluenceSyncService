@@ -177,6 +177,10 @@ public static class SqliteSchemaUpgrader
             ["IX_TaskIdMap_CustomerId_Category_Key_AnchorDateType"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_CustomerId_Category_Key_AnchorDateType ON TaskIdMap(CustomerId, Category_Key, AnchorDateType)",
             ["IX_TaskIdMap_StartOffsetDays"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_StartOffsetDays ON TaskIdMap(StartOffsetDays)",
             ["IX_TaskIdMap_Category_Key"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_Category_Key ON TaskIdMap(Category_Key)",
+            //Index - Covering - Workflow
+            ["IX_TaskIdMap_Workflow"] = "CREATE INDEX IF NOT EXISTS IX_TaskIdMap_Workflow ON TaskIdMap(CustomerId, PhaseName, " +
+            "AnchorDateType, Category_Key, State, Status, DueDateUtc, NextChaseAtUtcCached)",
+
 
             // === TableSyncStates indexes ===
             ["IX_TableSyncStates_SyncTracker"] = "CREATE INDEX IF NOT EXISTS IX_TableSyncStates_SyncTracker ON TableSyncStates(SyncTracker)",
@@ -233,6 +237,7 @@ public static class SqliteSchemaUpgrader
             // TableSyncStates indexes
             "IX_TableSyncStates_SyncTracker",
             "IX_TableSyncStates_CustomerId",
+            "IX_TaskIdMap_Workflow",
             "IX_TableSyncStates_CustomerName"
         };
 
@@ -267,6 +272,10 @@ public static class SqliteSchemaUpgrader
             "CREATE INDEX IX_TaskIdMap_StartOffsetDays ON TaskIdMap(StartOffsetDays)",
             "CREATE INDEX IX_TaskIdMap_CustomerId_Category_Key_AnchorDateType ON TaskIdMap(CustomerId, Category_Key, AnchorDateType)",
             "CREATE INDEX IX_TaskIdMap_Category_Key ON TaskIdMap(Category_Key)",
+
+            "CREATE INDEX IX_TaskIdMap_Workflow ON TaskIdMap(CustomerId, PhaseName, AnchorDateType, Category_Key, " +
+            "State, Status, DueDateUtc, NextChaseAtUtcCached)",
+
 
             // TableSyncStates indexes
             "CREATE INDEX IX_TableSyncStates_SyncTracker ON TableSyncStates(SyncTracker)",
