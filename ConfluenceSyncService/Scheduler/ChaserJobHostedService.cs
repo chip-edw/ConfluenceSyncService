@@ -658,35 +658,48 @@ public sealed class ChaserJobHostedService : BackgroundService
         string anchorDateType,
         CancellationToken ct)
     {
-        var sql = $@"
+        const string sql = @"
 SELECT COUNT(1)
 FROM TaskIdMap
-WHERE CustomerId    = $customerId
-  AND PhaseName     = $phaseName
-  AND Category_Key  = $categoryKey
+WHERE CustomerId     = $customerId
+  AND PhaseName      = $phaseName
+  AND Category_Key   = $categoryKey
   AND AnchorDateType = $anchorDateType
-  AND State         = 'linked'
-  AND (Status IS NULL OR Status <> '{Models.TaskStatus.Completed}');";
+  AND State          = 'linked'
+  AND (Status IS NULL OR Status <> $completed)
+  AND (
+        -- Case A: never chased yet, and actually due
+        (NextChaseAtUtcCached IS NULL
+         AND DueDateUtc IS NOT NULL
+         AND datetime(DueDateUtc) <= datetime('now'))
+
+        OR
+
+        -- Case B: next-chase already scheduled, and it’s due now/past
+        (NextChaseAtUtcCached IS NOT NULL
+         AND datetime(NextChaseAtUtcCached) <= datetime('now'))
+      );";
 
         await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
         await conn.OpenAsync(ct);
-
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         cmd.Parameters.AddWithValue("$customerId", customerId);
         cmd.Parameters.AddWithValue("$phaseName", phaseName);
         cmd.Parameters.AddWithValue("$categoryKey", categoryKey);
         cmd.Parameters.AddWithValue("$anchorDateType", anchorDateType);
+        cmd.Parameters.AddWithValue("$completed", Models.TaskStatus.Completed);
 
         var remaining = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
         var isComplete = remaining == 0;
 
-        _log.Debug("WorkflowFilter: CategoryComplete? customer={CustomerId} phase='{PhaseName}' category='{CategoryKey}'" +
-            " anchor={AnchorDateType} remainingOpen={Remaining} => {Complete}", customerId, phaseName, categoryKey, anchorDateType,
-            remaining, isComplete);
+        _log.Debug(
+            "WorkflowFilter: CategoryComplete? customer={CustomerId} phase='{PhaseName}' category='{CategoryKey}' anchor={AnchorDateType} remainingOpen={Remaining} => {Complete}",
+            customerId, phaseName, categoryKey, anchorDateType, remaining, isComplete);
 
         return isComplete;
     }
+
 
     private async Task<int?> GetEarliestOpenOffsetAsync(
         string customerId,
