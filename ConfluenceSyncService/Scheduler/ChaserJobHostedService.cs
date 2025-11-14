@@ -424,28 +424,32 @@ public sealed class ChaserJobHostedService : BackgroundService
                     customerId, phaseName);
             }
 
-            // Determine earliest-open category for this (customer, phase, anchor)
-            // Build list of (category, anchor) tuples from this group's tasks
-            var distinctCategories = g.Select(t => (Category: t.CategoryKey!, AnchorDateType: t.AnchorDateType!))
-                                      .Where(tuple => !string.IsNullOrWhiteSpace(tuple.Category) && !string.IsNullOrWhiteSpace(tuple.AnchorDateType))
-                                      .Distinct()
-                                      .OrderBy(tuple =>
-                                      {
-                                          if (!orderMap.TryGetValue(tuple, out var ord))
-                                          {
-                                              _log.Warning("WorkflowFilter: Unknown category/anchor '{Category}/{AnchorDateType}' for customer {CustomerId}, phase '{PhaseName}'. Treating as lowest priority.",
-                                                  tuple.Category, tuple.AnchorDateType, customerId, phaseName);
-                                              return int.MaxValue;
-                                          }
-                                          return ord;
-                                      })
-                                      .ToList();
+            // Get ALL categories for this anchor type from the workflow definition (not just from due tasks)
+            // CRITICAL: We must check ALL categories in order, not just categories that have due tasks
+            var allCategoriesForAnchor = orderMap.Keys
+                .Where(tuple => tuple.AnchorDateType.Equals(anchorDateType, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(tuple => orderMap[tuple])
+                .ToList();
 
+            _log.Debug("WorkflowFilter: Checking {Count} total categories for anchor {AnchorDateType} (customer {CustomerId}, phase '{PhaseName}')",
+                allCategoriesForAnchor.Count, anchorDateType, customerId, phaseName);
+
+            // Find the first incomplete category by checking ALL categories in workflow order
             (string Category, string AnchorDateType)? earliestOpenCategory = null;
-            foreach (var cat in distinctCategories)
+            foreach (var cat in allCategoriesForAnchor)
             {
                 var complete = await IsCategoryCompleteAsync(customerId, phaseName, cat.Category, cat.AnchorDateType, ct);
-                if (!complete) { earliestOpenCategory = cat; break; }
+
+                _log.Debug("WorkflowFilter: Category '{Category}' for anchor {AnchorDateType} (customer {CustomerId}, phase '{PhaseName}') - Complete: {Complete}",
+                    cat.Category, cat.AnchorDateType, customerId, phaseName, complete);
+
+                if (!complete)
+                {
+                    earliestOpenCategory = cat;
+                    _log.Information("WorkflowFilter: Earliest incomplete category for anchor {AnchorDateType} (customer {CustomerId}, phase '{PhaseName}') is '{Category}'",
+                        anchorDateType, customerId, phaseName, cat.Category);
+                    break;
+                }
             }
 
             if (earliestOpenCategory is null)
