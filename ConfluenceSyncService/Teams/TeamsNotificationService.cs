@@ -37,6 +37,17 @@ namespace ConfluenceSyncService.Teams
             string acknowledgedBy,
             DateTimeOffset acknowledgedAt,
             CancellationToken ct);
+
+        /// <summary>
+        /// Updates a Teams message to remove the expired ACK link.
+        /// Shows that the link has expired and directs users to the latest message.
+        /// </summary>
+        Task<bool> UpdateMessageToRemoveExpiredLinkAsync(
+            string teamId,
+            string channelId,
+            string messageId,
+            string taskName,
+            CancellationToken ct);
     }
 
     /// <summary>
@@ -499,6 +510,61 @@ namespace ConfluenceSyncService.Teams
             catch (Exception ex)
             {
                 Log.Error(ex, "Exception while updating Teams message {MessageId} for acknowledgment", messageId);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Updates a Teams message to remove the expired ACK link and show expiration notice.
+        /// </summary>
+        public async Task<bool> UpdateMessageToRemoveExpiredLinkAsync(
+            string teamId,
+            string channelId,
+            string messageId,
+            string taskName,
+            CancellationToken ct)
+        {
+            try
+            {
+                var http = await CreateGraphClientAsync(ct);
+
+                // Build the updated message content without the ACK link
+                var updatedContent = $@"
+<p><strong>OVERDUE: {taskName}</strong></p>
+<p style='color: #888;'><em>âš ï¸ Acknowledgment link expired - please see the latest message below for the current link.</em></p>";
+
+                // Prepare the update payload
+                var updatePayload = new
+                {
+                    body = new
+                    {
+                        contentType = "html",
+                        content = updatedContent
+                    }
+                };
+
+                // PATCH the message
+                var updateUrl = $"/v1.0/teams/{teamId}/channels/{channelId}/messages/{messageId}";
+
+                Log.Information("Removing expired ACK link from Teams message: TeamId={TeamId}, ChannelId={ChannelId}, MessageId={MessageId}",
+                    teamId, channelId, messageId);
+
+                var response = await http.PatchAsync(updateUrl, JsonContent.Create(updatePayload), ct);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync(ct);
+                    Log.Error("Failed to update Teams message to remove expired link: Status={Status}, Error={Error}, URL={Url}",
+                        response.StatusCode, errorContent, updateUrl);
+                    return false;
+                }
+
+                Log.Information("Successfully removed expired ACK link from Teams message {MessageId}", messageId);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Exception while removing expired link from Teams message {MessageId}", messageId);
                 return false;
             }
         }

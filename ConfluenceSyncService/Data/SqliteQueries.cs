@@ -14,6 +14,7 @@ public static class SqliteQueries
         string TeamId,
         string ChannelId,
         string RootMessageId,
+        string LastMessageId,
         int? AckVersion,
         string CustomerId,
         int? StartOffsetDays,
@@ -27,7 +28,7 @@ public static class SqliteQueries
         await conn.OpenAsync(ct);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = $@"
- SELECT TaskId, SpItemId, TaskName, Region, AnchorDateType, TeamId, ChannelId, RootMessageId, 
+ SELECT TaskId, SpItemId, TaskName, Region, AnchorDateType, TeamId, ChannelId, RootMessageId, LastMessageId,
         IFNULL(AckVersion,0) as AckVersion, 
         IFNULL(CustomerId,'') as CustomerId,
         StartOffsetDays,
@@ -60,11 +61,12 @@ public static class SqliteQueries
                 rdr.IsDBNull(5) ? "" : rdr.GetString(5),               // TeamId
                 rdr.IsDBNull(6) ? "" : rdr.GetString(6),               // ChannelId
                 rdr.IsDBNull(7) ? "" : rdr.GetString(7),               // RootMessageId
-                rdr.GetInt32(8),                                        // AckVersion
-                rdr.IsDBNull(9) ? "" : rdr.GetString(9),               // CustomerId
-                rdr.IsDBNull(10) ? null : rdr.GetInt32(10),            // StartOffsetDays
-                rdr.IsDBNull(11) ? "" : rdr.GetString(11),             // Category_Key
-                rdr.IsDBNull(12) ? "" : rdr.GetString(12),             // PhaseName
+                rdr.IsDBNull(8) ? "" : rdr.GetString(8),               // LastMessageId
+                rdr.GetInt32(9),                                        // AckVersion
+                rdr.IsDBNull(10) ? "" : rdr.GetString(10),               // CustomerId
+                rdr.IsDBNull(11) ? null : rdr.GetInt32(11),            // StartOffsetDays
+                rdr.IsDBNull(12) ? "" : rdr.GetString(12),             // Category_Key
+                rdr.IsDBNull(13) ? "" : rdr.GetString(13),             // PhaseName
                 "",                                                     // CompanyName (populated later from SharePoint)
                 null                                                    // DueDateUtc (populated later from SharePoint)
             ));

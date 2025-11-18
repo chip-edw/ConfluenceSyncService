@@ -301,6 +301,20 @@ public sealed class ChaserJobHostedService : BackgroundService
                         );
                     }
 
+                    // Remove expired ACK link from previous chaser (if this is a follow-up notification)
+                    if (!isFirstNotification && !string.IsNullOrWhiteSpace(t.LastMessageId))
+                    {
+                        var linkRemoved = await tsvc.UpdateMessageToRemoveExpiredLinkAsync(
+                            t.TeamId,
+                            t.ChannelId,
+                            t.LastMessageId,
+                            t.TaskName,
+                            ct);
+
+                        _log.Information("RemovedExpiredAckLink: TaskId={TaskId}, LastMessageId={LastMessageId}, Success={Success}",
+                            t.TaskId, t.LastMessageId, linkRemoved);
+                    }
+
                     proceedWithUpdates = true;
                 }
                 else
