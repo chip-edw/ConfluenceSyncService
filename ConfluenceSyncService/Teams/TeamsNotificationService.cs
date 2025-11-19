@@ -531,7 +531,7 @@ namespace ConfluenceSyncService.Teams
                 // Build the updated message content without the ACK link
                 var updatedContent = $@"
 <p><strong>OVERDUE: {taskName}</strong></p>
-<p style='color: #888;'><em>âš ï¸ Acknowledgment link expired - please see the latest message below for the current link.</em></p>";
+<p style='color: #888;'><em>Attention¸ Acknowledgment link expired - please see the latest message below for the current link.</em></p>";
 
                 // Prepare the update payload
                 var updatePayload = new
