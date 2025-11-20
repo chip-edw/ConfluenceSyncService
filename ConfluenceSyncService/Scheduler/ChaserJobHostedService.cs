@@ -668,6 +668,8 @@ public sealed class ChaserJobHostedService : BackgroundService
     #region Helper Classes
     /// <summary>
     /// Checks if all tasks in a category are completed for the given customer.
+    /// CRITICAL: A category is complete only when ALL tasks are Status=Completed,
+    /// regardless of due dates or chase timing. This enforces proper sequential workflow gating.
     /// </summary>
     private async Task<bool> IsCategoryCompleteAsync(
         string customerId,
@@ -684,19 +686,7 @@ WHERE CustomerId     = $customerId
   AND Category_Key   = $categoryKey
   AND AnchorDateType = $anchorDateType
   AND State          = 'linked'
-  AND (Status IS NULL OR Status <> $completed)
-  AND (
-        -- Case A: never chased yet, and actually due
-        (NextChaseAtUtcCached IS NULL
-         AND DueDateUtc IS NOT NULL
-         AND datetime(DueDateUtc) <= datetime('now'))
-
-        OR
-
-        -- Case B: next-chase already scheduled, and it’s due now/past
-        (NextChaseAtUtcCached IS NOT NULL
-         AND datetime(NextChaseAtUtcCached) <= datetime('now'))
-      );";
+  AND (Status IS NULL OR Status <> $completed);";
 
         await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_dbPath};");
         await conn.OpenAsync(ct);

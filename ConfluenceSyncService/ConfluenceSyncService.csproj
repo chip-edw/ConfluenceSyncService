@@ -9,9 +9,9 @@
     <EnableWindowsService>true</EnableWindowsService>
 
     <!-- VERSION PROPERTIES: -->
-    <Version>1.3.3.6</Version>
-    <AssemblyVersion>1.3.3.6</AssemblyVersion>
-    <FileVersion>1.3.3.6</FileVersion>
+    <Version>1.3.3.7</Version>
+    <AssemblyVersion>1.3.3.7</AssemblyVersion>
+    <FileVersion>1.3.3.7</FileVersion>
   </PropertyGroup>
 
   <!-- Enable ASP.NET Core (controllers/routing/Kestrel) while staying on Worker SDK -->
