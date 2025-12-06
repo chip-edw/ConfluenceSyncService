@@ -53,5 +53,6 @@ The system is architected for long-term extensibility to integrate other SaaS pl
 
 ## License
 
-This project is licensed under the terms of the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).  
+This project is licensed under the terms of the [MIT License](LICENSE).  
+
 You may copy, modify, and distribute this program under the conditions laid out in the license, which ensures that modified versions made available over a network must also be shared under the same license.
